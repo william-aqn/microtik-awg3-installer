@@ -142,6 +142,20 @@ prepare.py ничего не меняет на роутере: создаёт se
 
 DNS общий для устройств; при VPN используется DNS профиля. GeoSite работает через RouterOS DNS FWD/address-list: клиентам нужен DNS роутера. DoH, Android Private DNS и сторонний DNS могут обходить доменные правила. Общие CDN-IP иногда направляют через VPN другие домены. Клиентов за дополнительным NAT нельзя разделить по исходным MAC.
 
+### Исправление DNS в ранней установке 0.2
+
+Если VPN подключён, но сайты не открываются, в первой установке 0.2 могло отсутствовать правило `AWGC router replies`. Из-за этого `AWGC input guard` блокировал ответы DNS, которые роутер запрашивал через туннель. Установщик исправлен; для уже установленной версии выполните в Terminal WebFig/WinBox:
+
+```routeros
+:if ([:len [/ip/firewall/filter/find where comment="AWGC router replies"]] = 0) do={
+    /ip/firewall/filter/add chain=input in-interface=docker-awg-veth connection-state=established,related action=accept comment="AWGC router replies" place-before=[find where comment="AWGC input guard"]
+}
+/ip/dns/cache/flush
+:put [:resolve "example.com"]
+```
+
+Правило пропускает ответы на отслеживаемые соединения роутера перед блокирующим правилом. Новые входящие соединения из контейнера по-прежнему ограничены API и DNS. Перезапуск контейнера не нужен. Проверка handshake в панели сама по себе не проверяет DNS клиентов; после установки откройте сайты с устройства за MikroTik.
+
 | Ресурс | Предел |
 |---|---|
 | Профили | 16 по 16 KiB, один активный |

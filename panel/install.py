@@ -26,6 +26,7 @@ def diagnostics(router, output):
         '/system/routerboard/mode-button/print',
         '/system/leds/print detail where leds="user-led"',
         '/ip/firewall/mangle/print stats where comment~"^AWG"',
+        '/ip/firewall/filter/print stats where comment~"^AWGC"',
         '/routing/rule/print where comment~"^AWG"',
         '/ip/route/print where routing-table=to-awg',
     )

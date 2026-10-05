@@ -161,6 +161,9 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     setup = checks + [f'/system/backup/save name={quote(disk + "/before-awg-control")}', dns_snapshot] + actions
     setup += [
         '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth action=drop comment="AWGC input guard" place-before=0',
+        # The router's own DNS requests return through the tunnel with the
+        # remote resolver as source, not the container's management address.
+        '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth connection-state=established,related action=accept comment="AWGC router replies" place-before=[find where comment="AWGC input guard"]',
         '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth src-address=172.18.20.2 dst-address=172.18.20.1 protocol=tcp dst-port=80,53 action=accept comment="AWGC API and DNS" place-before=[find where comment="AWGC input guard"]',
         '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth src-address=172.18.20.2 dst-address=172.18.20.1 protocol=udp dst-port=53 action=accept comment="AWGC DNS" place-before=[find where comment="AWGC input guard"]',
         # Only encrypted transport may leave the container for the internet.

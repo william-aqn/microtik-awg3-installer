@@ -55,10 +55,41 @@ class PanelPrepareTests(unittest.TestCase):
             anchor = re.search(r'place-before=\[find where comment="([^"]+)"\]', line)
             before = anchor.group(1) if anchor else 'existing-rule-zero'
             rules.insert(rules.index(before), name)
-        for allow in ('AWGC API and DNS', 'AWGC DNS'):
+        for allow in ('AWGC API and DNS', 'AWGC DNS', 'AWGC router replies'):
             self.assertLess(rules.index(allow), rules.index('AWGC input guard'))
         for allow in ('AWGC transport replies', 'AWGC LAN traffic', 'AWGC temporary upstream'):
             self.assertLess(rules.index(allow), rules.index('AWGC access guard'))
+
+    def test_router_dns_replies_pass_but_unsolicited_container_input_does_not(self):
+        import re
+        import shlex
+        _, setup, _ = prepare.build_bundle(
+            '192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
+        rules = []
+        for line in setup.splitlines():
+            if not line.startswith('/ip/firewall/filter/add '):
+                continue
+            rule = dict(token.split('=', 1) for token in shlex.split(line.split(' place-before=')[0]) if '=' in token)
+            anchor = re.search(r'place-before=\[find where comment="([^"]+)"\]', line)
+            index = next(i for i, item in enumerate(rules) if item['comment'] == anchor.group(1)) if anchor else 0
+            rules.insert(index, rule)
+
+        def verdict(protocol, state, source, port):
+            packet = {'chain': 'input', 'in-interface': 'docker-awg-veth',
+                      'in-interface-list': '', 'src-address': source,
+                      'dst-address': '172.18.20.1', 'protocol': protocol,
+                      'connection-state': state, 'dst-port': str(port)}
+            for rule in rules:
+                if all(key not in rule or value in rule[key].split(',') for key, value in packet.items()):
+                    return rule['action']
+            return 'unmatched'
+
+        for protocol in ('udp', 'tcp'):
+            self.assertEqual(verdict(protocol, 'established', '1.1.1.1', 49152), 'accept')
+            self.assertEqual(verdict(protocol, 'new', '1.1.1.1', 49152), 'drop')
+        self.assertEqual(verdict('icmp', 'related', '1.1.1.1', 0), 'accept')
+        self.assertEqual(verdict('tcp', 'new', '172.18.20.2', 8291), 'drop')
+        self.assertEqual(verdict('udp', 'new', '172.18.20.2', 53), 'accept')
 
     def test_mode_double_press_acknowledges_before_full_stop(self):
         _, setup, _ = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
