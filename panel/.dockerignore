@@ -1,0 +1,7 @@
+*
+!Dockerfile
+!go.mod
+!*.go
+!*_test.go
+!web
+!web/*

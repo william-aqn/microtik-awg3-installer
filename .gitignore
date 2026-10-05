@@ -15,3 +15,9 @@ diagnostics.txt
 error.txt
 before-awg.rsc
 after-awg.rsc
+awg-panel-private*/
+panel/awg-panel
+panel/awg-panel.exe
+panel/settings.json
+panel/state.json
+panel/pending.json

@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_SUFFIXES = {'.py', '.ps1', '.sh', '.rsc', '.yml', '.yaml'}
+SOURCE_SUFFIXES = {'.py', '.ps1', '.sh', '.rsc', '.yml', '.yaml', '.go', '.js', '.html', '.css'}
 IGNORED_DIRS = {'.git', '.venv', '__pycache__', '.ruff_cache'}
 
 
