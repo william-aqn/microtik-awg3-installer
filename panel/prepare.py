@@ -28,10 +28,16 @@ def main():
     p.add_argument('--upstream')
     p.add_argument('--wan-address')
     p.add_argument('--migrate-from', type=Path, help='Previous private panel settings.json')
+    p.add_argument('--buttons-only', action='store_true', help='Generate Mode/Reset update for an existing unified installation')
     p.add_argument('--output', type=Path, default=Path('awg-control-private'))
     args = p.parse_args()
     if args.output.exists():
         p.error('Output directory exists. Choose a new path.')
+    if args.buttons_only:
+        write_private(args.output / 'buttons.rsc', _DEPLOY.button_setup(args.lan))
+        print('Button update prepared. Import buttons.rsc on the existing AWG Control router.')
+        print('Mode toggles the connection; short Reset stops the container. No router settings changed.')
+        return
     prior = None
     password = ''
     if args.migrate_from:

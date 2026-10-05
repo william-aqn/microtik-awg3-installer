@@ -24,13 +24,14 @@ def diagnostics(router, output):
     commands = (
         '/system/resource/print', '/container/print', '/disk/print',
         '/system/routerboard/mode-button/print',
+        '/system/routerboard/reset-button/print',
         '/system/leds/print detail where leds="user-led"',
         '/ip/firewall/mangle/print stats where comment~"^AWG"',
         '/ip/firewall/filter/print stats where comment~"^AWGC"',
         '/routing/rule/print where comment~"^AWG"',
         '/ip/route/print where routing-table=to-awg',
     )
-    parts = ['AWG Control 0.2.0 diagnostics (no configuration contents)']
+    parts = ['AWG Control 0.2.1 diagnostics (no configuration contents)']
     for cmd in commands:
         try:
             parts.append(cmd + '\n' + router.run(cmd))

@@ -301,3 +301,36 @@ func TestDiagnosticWhitelist(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+func TestLEDLeavesBothButtonHandlersInControl(t *testing.T) {
+	for _, job := range []string{"awg-mode", "awg-stop", "unrelated-job"} {
+		t.Run(job, func(t *testing.T) {
+			writes := 0
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/rest/system/script/job/print":
+					_ = json.NewEncoder(w).Encode([]Row{{"script": job}})
+				case "/rest/system/leds/print":
+					fmt.Fprint(w, `[{".id":"*1","type":"off"}]`)
+				case "/rest/system/leds/*1":
+					writes++
+					fmt.Fprint(w, `{}`)
+				default:
+					t.Errorf("unexpected request %s", r.URL.Path)
+				}
+			}))
+			defer server.Close()
+			if e := newRouter(Settings{RouterURL: server.URL}).LED(context.Background(), true); e != nil {
+				t.Fatal(e)
+			}
+			want := 0
+			if job == "unrelated-job" {
+				want = 1
+			}
+			if writes != want {
+				t.Fatalf("LED writes = %d, want %d", writes, want)
+			}
+		})
+	}
+}

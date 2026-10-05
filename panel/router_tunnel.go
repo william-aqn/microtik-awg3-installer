@@ -43,12 +43,14 @@ func (r *Router) Gate(ctx context.Context, on bool) error {
 	return r.script(ctx, "awg-control-gate", source)
 }
 func (r *Router) LED(ctx context.Context, on bool) error {
-	jobs, e := r.rows(ctx, "system/script/job", "script", "script=awg-mode")
+	jobs, e := r.rows(ctx, "system/script/job", "script")
 	if e != nil {
 		return e
 	}
-	if len(jobs) > 0 {
-		return nil
+	for _, job := range jobs {
+		if job["script"] == "awg-mode" || job["script"] == "awg-stop" {
+			return nil
+		}
 	}
 	rows, e := r.rows(ctx, "system/leds", ".id,type", "leds=user-led")
 	if e != nil {

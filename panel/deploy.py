@@ -10,52 +10,78 @@ def quote(value):
 
 
 def mode_script(lan):
-    prefix = '^' + re.escape(str(ipaddress.ip_network(lan).network_address).rsplit('.', 1)[0] + '.')
     return f'''\
-:global awgModeClicks;
-:if ([:typeof $awgModeClicks] != "num") do={{ :set awgModeClicks 0 }};
-:set awgModeClicks ($awgModeClicks + 1);
-:if ($awgModeClicks > 1) do={{ :return 0 }};
-:delay 1500ms;
-:local clicks $awgModeClicks;
-:set awgModeClicks 0;
+:if ([:len [/system/script/job/find where script="awg-mode"]] > 1 || [:len [/system/script/job/find where script="awg-stop"]] > 0) do={{ :log warning "AWGC: button busy"; :return 0 }};
 :local c [/container/find where name="awg-control"];
 :if ([:len $c] != 1) do={{ :log error "AWGC: container missing"; :return 0 }};
-:if ($clicks > 1) do={{
-    :log info "AWGC: full stop accepted";
-    :local led [/system/leds/find where leds="user-led"];
-    :if ([:len $led] = 1) do={{
-        /system/leds/set $led type=off;
-        :delay 150ms;
-        :for pulse from=1 to=2 do={{
-            /system/leds/set $led type=on;
-            :delay 150ms;
-            /system/leds/set $led type=off;
-            :delay 150ms;
-        }};
-    }};
-    :local wasRunning [/container/get $c running];
-    /container/set $c start-on-boot=no;
-    :if ($wasRunning = true) do={{ /container/stop $c }};
-    :for wait from=1 to=30 do={{ :if ([/container/get $c stopped] != true) do={{ :delay 1s }} }};
-    :if ([/container/get $c stopped] != true) do={{ :log error "AWGC: stop incomplete"; :return 0 }};
-    /ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "];
-    /routing/rule/disable [find where comment~"^AWGC DNS "];
-    /ip/firewall/connection/remove [find where src-address~{quote(prefix)}];
-    /ip/dns/cache/flush;
-    :if ([:len $led] = 1) do={{ /system/leds/set $led type=off }};
+:log info "AWGC: connection button accepted";
+:if ([/container/get $c running] != true) do={{
+    /container/set $c start-on-boot=yes;
+    /container/start $c;
+    :for wait from=1 to=30 do={{ :if ([/container/get $c running] != true) do={{ :delay 1s }} }};
+    :if ([/container/get $c running] != true) do={{ :log error "AWGC: container did not start"; :return 0 }};
+    /container/shell $c cmd="/awg-control --control connect" no-sh;
 }} else={{
-    :if ([/container/get $c running] != true) do={{
-        /container/set $c start-on-boot=yes;
-        /container/start $c;
-        :for wait from=1 to=30 do={{ :if ([/container/get $c running] != true) do={{ :delay 1s }} }};
-        :if ([/container/get $c running] != true) do={{ :log error "AWGC: container did not start"; :return 0 }};
-        /container/shell $c cmd="/awg-control --control connect" no-sh;
-    }} else={{
-        /container/shell $c cmd="/awg-control --control toggle" no-sh;
-    }};
+    /container/shell $c cmd="/awg-control --control toggle" no-sh;
 }};
 '''
+
+
+def stop_script(lan):
+    prefix = '^' + re.escape(str(ipaddress.ip_network(lan).network_address).rsplit('.', 1)[0] + '.')
+    return f'''\
+:if ([:len [/system/script/job/find where script="awg-stop"]] > 1 || [:len [/system/script/job/find where script="awg-mode"]] > 0) do={{ :log warning "AWGC: button busy"; :return 0 }};
+:local c [/container/find where name="awg-control"];
+:if ([:len $c] != 1) do={{ :log error "AWGC: container missing"; :return 0 }};
+:log info "AWGC: full stop accepted";
+:local led [/system/leds/find where leds="user-led"];
+:if ([:len $led] = 1) do={{
+    /system/leds/set $led type=off;
+    :delay 200ms;
+    :for pulse from=1 to=2 do={{
+        /system/leds/set $led type=on;
+        :delay 200ms;
+        /system/leds/set $led type=off;
+        :delay 200ms;
+    }};
+}};
+:local wasRunning [/container/get $c running];
+/container/set $c start-on-boot=no;
+:if ($wasRunning = true) do={{ /container/stop $c }};
+:for wait from=1 to=30 do={{ :if ([/container/get $c stopped] != true) do={{ :delay 1s }} }};
+:if ([/container/get $c stopped] != true) do={{ :log error "AWGC: stop incomplete"; :return 0 }};
+/ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "];
+/routing/rule/disable [find where comment~"^AWGC DNS "];
+/ip/firewall/connection/remove [find where src-address~{quote(prefix)}];
+/ip/dns/cache/flush;
+:if ([:len $led] = 1) do={{ /system/leds/set $led type=off }};
+'''
+
+
+RESET_CHECK = ':if (([/system/routerboard/reset-button/get enabled] = true || [/system/routerboard/reset-button/get on-event] != "") && [/system/routerboard/reset-button/get on-event] != "awg-stop") do={ :error "Existing Reset binding found; save and clear it before installation" }'
+RESET_SNAPSHOT = r':if ([:len [/system/script/find where name="awg-control-restore-reset"]] = 0) do={ :local oldHold [/system/routerboard/reset-button/get hold-time]; /system/script/add name=awg-control-restore-reset policy=read,write source=("/system/routerboard/reset-button/set enabled=no on-event=\"\" hold-time=\"" . [:tostr $oldHold] . "\"") }'
+
+
+def button_setup(lan, *, preflight=True):
+    network = ipaddress.IPv4Network(lan, strict=True)
+    if network.prefixlen != 24 or not network.is_private or network.overlaps(ipaddress.ip_network('172.18.20.0/22')):
+        raise ValueError('Use a private IPv4 LAN /24.')
+    commands = [
+        RESET_CHECK,
+        ':if ([:len [/container/find where name="awg-control"]] != 1) do={ :error "Existing AWG Control installation required" }',
+        ':local binding [/system/routerboard/mode-button/get on-event]; :if ($binding != "awg-mode" && $binding != "awg-mode-button" && $binding != "") do={ :error "Unrelated Mode binding; save it before updating" }',
+    ] if preflight else []
+    commands += [RESET_SNAPSHOT, '/system/routerboard/mode-button/set enabled=no', '/system/routerboard/reset-button/set enabled=no']
+    for name, source in (('awg-mode', mode_script(lan)), ('awg-stop', stop_script(lan))):
+        commands.append(f':if ([:len [/system/script/find where name="{name}"]] = 0) do={{ /system/script/add name={name} policy=read,write,test }}')
+        commands.append(f'/system/script/set [find where name="{name}"] policy=read,write,test dont-require-permissions=no source={{\n{source}}}')
+    commands += [
+        '/system/script/remove [find where name="awg-mode-button"]',
+        '/system/script/environment/remove [find where name="awgModeClicks"]',
+        '/system/routerboard/mode-button/set enabled=yes hold-time=0s..3s on-event=awg-mode',
+        '/system/routerboard/reset-button/set enabled=yes hold-time=0s..2s on-event=awg-stop',
+    ]
+    return '\n'.join(commands) + '\n'
 
 
 def legacy_disable(menu, pattern):
@@ -118,6 +144,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     }
     setup = [
         '# Private deployment bundle. Do not publish; contains service credentials in fresh mode.',
+        RESET_CHECK,
         ':if ([/system/resource/get board-name] != "hAP ac^2" || [/system/resource/get version] != "7.24.5 (stable)") do={ :error "Validated target: hAP ac2 / RouterOS 7.24.5 stable" }',
         ':if ([/system/resource/get free-memory] < 25165824 || [/system/resource/get free-hdd-space] < 163840) do={ :error "Need 24 MiB RAM and 160 KiB flash free" }',
         ':if ([:len [/container/find where name="awg-control"]] > 0 || [:len [/user/find where name="awg-control"]] > 0 || [:len [/system/script/find where name="awg-control-restore-dns"]] > 0) do={ :error "Already installed or partial migration; inspect rollback before retrying" }',
@@ -143,7 +170,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
         ]
     else:
         setup += [
-            ':if ([:len [/interface/find where name="docker-awg-veth"]] > 0 || [:len [/routing/table/find where name="to-awg"]] > 0 || [:len [/system/script/find where name="awg-mode"]] > 0) do={ :error "Existing integration found; use migration or a clean target" }',
+            ':if ([:len [/interface/find where name="docker-awg-veth"]] > 0 || [:len [/routing/table/find where name="to-awg"]] > 0 || [:len [/system/script/find where name="awg-mode" or name="awg-mode-button"]] > 0) do={ :error "Existing integration found; use migration or a clean target" }',
             ':if ([/system/routerboard/mode-button/get enabled] = true) do={ :error "Existing Mode binding found; save and disable it before fresh installation" }',
             '/interface/veth/add name=docker-awg-veth address=172.18.20.2/30 gateway=172.18.20.1 comment="AWGC uplink"',
             '/ip/address/add address=172.18.20.1/30 interface=docker-awg-veth comment="AWGC management"',
@@ -195,10 +222,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     setup += [
         ':if ([:len [/system/leds/find where leds="user-led"]] = 0) do={ /system/leds/add leds=user-led type=off }',
         '/system/leds/set [find where leds="user-led"] type=off',
-        # Mode runs with restricted event permissions. Requiring the unused
-        # "policy" right prevents physical presses from starting this script.
-        f'/system/script/add name=awg-mode policy=read,write,test source={{\n{mode_script(str(network))}}}',
-        '/system/routerboard/mode-button/set enabled=yes hold-time=0s..3s on-event=awg-mode',
+        button_setup(str(network), preflight=False),
         f'/container/mounts/add list=awg_control_mount src={quote(disk + "/awg-control-data")} dst=/data',
         f'/container/add file={quote(disk + "/awg-control.tar")} name=awg-control interface=docker-awg-veth root-dir={quote(disk + "/awg-control-root")} mountlists=awg_control_mount dns=172.18.20.1 logging=yes start-on-boot=yes memory-high=25165824 memory-max=33554432',
         ':local c [/container/find where name="awg-control"]',
@@ -210,10 +234,12 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     rollback = [
         '# Removes unified integration; USB data is preserved.',
         '/system/routerboard/mode-button/set enabled=no',
+        ':if ([/system/routerboard/reset-button/get on-event] = "awg-stop") do={ /system/routerboard/reset-button/set enabled=no }',
         '/ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "]',
         ':local c [/container/find where name="awg-control"]; :if ([:len $c] = 1) do={ :local wasRunning [/container/get $c running]; /container/set $c start-on-boot=no; :if ($wasRunning = true) do={ /container/stop $c }; :for i from=1 to=30 do={ :if ([/container/get $c stopped] != true) do={ :delay 1s } }; :if ([/container/get $c stopped] != true) do={ :error "Container still stopping" }; /container/remove $c }',
         '/routing/rule/remove [find where comment~"^AWGC DNS "]',
-        '/system/script/remove [find where name="awg-mode" or name="awg-control-configure" or name="awg-control-gate"]',
+        '/system/script/remove [find where name="awg-mode" or name="awg-stop" or name="awg-mode-button" or name="awg-control-configure" or name="awg-control-gate"]',
+        ':if ([:len [/system/script/find where name="awg-control-restore-reset"]] = 1) do={ /system/script/run awg-control-restore-reset; /system/script/remove [find where name="awg-control-restore-reset"] }',
         '/container/mounts/remove [find where list="awg_control_mount"]',
     ]
     for menu in ('/ip/firewall/filter', '/ip/firewall/nat', '/ip/firewall/mangle'):

@@ -91,22 +91,35 @@ class PanelPrepareTests(unittest.TestCase):
         self.assertEqual(verdict('tcp', 'new', '172.18.20.2', 8291), 'drop')
         self.assertEqual(verdict('udp', 'new', '172.18.20.2', 53), 'accept')
 
-    def test_mode_double_press_acknowledges_before_full_stop(self):
+    def test_reset_acknowledges_before_full_stop_and_mode_only_toggles(self):
         _, setup, _ = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
-        self.assertIn(':delay 1500ms', setup)
+        self.assertNotIn(':delay 1500ms', setup)
+        self.assertNotIn(':global awgModeClicks', setup)
         self.assertIn(':for pulse from=1 to=2', setup)
         self.assertLess(setup.index('full stop accepted'), setup.index('for pulse'))
         self.assertLess(setup.index('for pulse'), setup.index('/container/stop $c'))
         self.assertIn('--control toggle', setup)
         self.assertIn('--control connect', setup)
-        self.assertNotIn('reset-button', setup)
+        self.assertIn('/system/routerboard/reset-button/set enabled=yes hold-time=0s..2s on-event=awg-stop', setup)
+        self.assertNotIn('/container/stop', prepare._DEPLOY.mode_script('192.168.3.0/24'))
 
     def test_mode_does_not_require_admin_policy_or_bypass_permissions(self):
         _, setup, _ = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
-        mode = next(line for line in setup.splitlines() if line.startswith('/system/script/add name=awg-mode '))
-        permissions = mode.split(' policy=', 1)[1].split(' ', 1)[0].split(',')
-        self.assertEqual(set(permissions), {'read', 'write', 'test'})
+        for name in ('awg-mode', 'awg-stop'):
+            mode = next(line for line in setup.splitlines() if line.startswith('/system/script/set [find where name="' + name + '"] '))
+            permissions = mode.split(' policy=', 1)[1].split(' ', 1)[0].split(',')
+            self.assertEqual(set(permissions), {'read', 'write', 'test'})
         self.assertNotIn('dont-require-permissions=yes', setup)
+
+    def test_physical_buttons_have_direct_handlers_and_reset_restore(self):
+        _, setup, rollback = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
+        binding = next(line for line in setup.splitlines() if line.startswith('/system/routerboard/mode-button/set enabled=yes'))
+        self.assertIn('on-event=awg-mode', binding)
+        self.assertNotIn(':execute', setup)
+        self.assertIn('name="awg-mode-button"', rollback)
+        self.assertIn('/system/script/run awg-control-restore-reset', rollback)
+        self.assertLess(setup.index('Existing Reset binding'), setup.index('/system/backup/save'))
+        self.assertIn('oldHold', setup)
 
     def test_migration_parks_legacy_engine_and_has_restore(self):
         prior = {'router_user': 'awg-panel', 'router_password': 'a' * 48, 'password_salt': 'b' * 32, 'password_hash': 'c' * 64}

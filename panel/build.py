@@ -14,7 +14,7 @@ def main():
         parser.error('Output already exists; choose a new filename.')
     args.output.parent.mkdir(parents=True, exist_ok=True)
     root = Path(__file__).resolve().parent
-    image = 'awg-control:0.2.0'
+    image = 'awg-control:0.2.1'
     subprocess.run(['docker', 'build', '--platform', 'linux/arm/v7', '--provenance=false',
                     '-t', image, '-f', str(root / 'Dockerfile'), str(root)], check=True)
     subprocess.run(['docker', 'save', '--platform', 'linux/arm/v7',
