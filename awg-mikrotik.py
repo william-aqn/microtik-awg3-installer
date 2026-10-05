@@ -46,6 +46,7 @@ SSH_TIMEOUT = 15
 START_TIMEOUT = 45
 STOP_WAIT = 15
 TUNNEL_ATTEMPTS = 20
+LED_INTERVAL = "3s"
 MEMORY_HIGH = 32 * 1024 * 1024
 MEMORY_MAX = 40 * 1024 * 1024
 GO_MEMORY_LIMIT = "24MiB"
@@ -114,6 +115,7 @@ class Settings:
     wan: str = "ether1"
     disk: str = "usb1-part1"
     bind_mode: bool = True
+    bind_led: bool = True
 
     def validate(self):
         net = ipaddress.IPv4Network(self.lan, strict=True)
@@ -236,6 +238,8 @@ def diag_rsc():
     /container/print
     /disk/print
     /system/routerboard/mode-button/print
+    /system/leds/print detail where leds="user-led"
+    /system/scheduler/print detail where name="awg-led"
     /routing/rule/print detail where comment~"^AWG3 "
     /ip/route/print detail where routing-table=to-awg
     /ip/firewall/filter/print stats where comment~"^AWG3 "
@@ -243,6 +247,26 @@ def diag_rsc():
     /ip/firewall/mangle/print stats where comment~"^AWG3 "
     :put "For container handshake: /container/shell [find where name=awg3]"
     :put "Never share awg0.conf or showconf. Use awg show awg0 latest-handshakes."
+}
+'''
+
+
+def led_rsc():
+    # Read routing/container state; never change the VPN or probe the network.
+    return '''/system/script/add name=awg-led policy=read,write,test source={
+    :local led [/system/leds/find where leds="user-led"]
+    :if ([:len $led] != 1) do={ :return }
+    :local lit false
+    :do {
+        :local ct [/container/find where name="awg3"]
+        :local rule [/routing/rule/find where comment="AWG3 switch LAN"]
+        :if ([:len $ct] = 1 && [:len $rule] = 1) do={
+            :if ([/container/get $ct running] = true && [/routing/rule/get $rule disabled] = false) do={ :set lit true }
+        }
+    } on-error={ :set lit false }
+    :local expected "off"
+    :if ($lit = true) do={ :set expected "on" }
+    :if ([/system/leds/get $led type] != $expected) do={ /system/leds/set $led type=$expected }
 }
 '''
 
@@ -353,6 +377,11 @@ def make_plan(s, c):
     item('/ip/firewall/mangle', f'chain=forward action=change-mss out-interface={VETH} protocol=tcp tcp-flags=syn tcp-mss={mss + 1}-65535 new-mss={mss} passthrough=yes', 'AWG3 TCP MSS')
     add(diag_rsc().strip(), '/system/script/remove [find where name="awg-diag"]')
     add(toggle_rsc(s, c).strip(), '/system/script/remove [find where name="awg-toggle"]')
+    if s.bind_led:
+        add('/system/leds/add leds=user-led type=off', '/system/leds/remove [find where leds="user-led"]')
+        add(led_rsc().strip(), '/system/script/remove [find where name="awg-led"]')
+        add(f'/system/scheduler/add name=awg-led interval={LED_INTERVAL} start-time=00:00:00 on-event=awg-led policy=read,write,test',
+            '/system/scheduler/remove [find where name="awg-led"]')
     return plan
 
 
@@ -498,6 +527,9 @@ DIAG_COMMANDS = (
     ('Container', '/container/print'),
     ('USB', '/disk/print'),
     ('Mode button', '/system/routerboard/mode-button/print'),
+    ('User LED', '/system/leds/print detail where leds="user-led"'),
+    ('LED settings', '/system/leds/settings/print'),
+    ('LED scheduler', '/system/scheduler/print detail where name="awg-led"'),
     ('LAN addresses', '/ip/address/print'),
     ('WAN DHCP', '/ip/dhcp-client/print'),
     ('Main default', '/ip/route/print detail where dst-address=0.0.0.0/0 and routing-table=main'),
@@ -577,6 +609,11 @@ def preflight(router, s):
                         ('/system/script', 'name="awg-toggle" or name="awg-diag"')):
         if router.count(menu, where):
             raise InstallError('Existing AWG configuration detected. Use --diag; repeat installation stopped.')
+    if s.bind_led:
+        if router.count('/system/leds', 'leds="user-led"') or router.count('/system/script', 'name="awg-led"') or router.count('/system/scheduler', 'name="awg-led"'):
+            raise InstallError('User LED or awg-led objects are already assigned. Use --no-led to preserve them, or integrate manually.')
+        if router.get('/system/leds/settings', 'all-leds-off') != 'never':
+            raise InstallError('LED dark mode is enabled. Use --no-led or disable dark mode in System -> LEDs -> Settings first.')
     if router.count('/container'):
         raise InstallError('Other containers exist; shared RAM and DNS policy need a separate review.')
     addresses = router.run(':foreach id in=[/ip/address/find] do={ :put [/ip/address/get $id address] }').splitlines()
@@ -648,7 +685,8 @@ def install(router, args, s, c, work):
     print(f'LAN {s.lan} ({s.bridge}) -> AWG; WAN {s.wan}; USB {s.disk}.')
     print('Local private networks stay in main. Endpoint and keys come from your config file.')
     confirm('Create an AWG container, change DNS and route all LAN IPv4 internet through AWG?' +
-            ('\nMode will run awg-toggle. Reset/WPS is preserved.' if s.bind_mode else ''))
+            ('\nMode will run awg-toggle. Reset/WPS is preserved.' if s.bind_mode else '') +
+            ('\nThe free user-led will show container running + LAN VPN selected.' if s.bind_led else ''))
     prepare_disk(router, s)
     image = build_image(work / 'awg3-arm.tar')
     undo = []
@@ -709,12 +747,19 @@ def install(router, args, s, c, work):
         router.run('/system/script/run awg-toggle', timeout=120)
         if router.get('/routing/rule', 'disabled', 'comment="AWG3 switch LAN"') != 'false':
             raise InstallError('The script did not enable LAN policy. Check diagnostics.')
+        if s.bind_led:
+            router.run('/system/script/run awg-led')
+            if router.get('/system/leds', 'type', 'leds="user-led"') != 'on':
+                raise InstallError('The AWG LED did not turn on. Check diagnostics.')
         after = f'{s.disk}/after-awg-{timestamp}'
         router.run(f'/system/backup/save name={ros_quote(after)}')
         router.run(f'/export file={ros_quote(after)}')
         secure_write(work / 'installed.json', json.dumps({'version': VERSION, 'host': args.host, 'image': IMAGE_DIGEST, 'usb_backup': after}, indent=2))
         print('AWG is ON. Check the public IP on a device connected to MikroTik LAN/Wi-Fi.')
-        print('Mode next to USB: short press toggles VPN / normal internet. Startup usually takes 10-20 seconds.')
+        if s.bind_mode:
+            print('Mode next to USB: short press toggles VPN / normal internet. Startup usually takes 10-20 seconds.')
+        if s.bind_led:
+            print('USR LED: ON means container running + LAN VPN selected. OFF means disabled/stopped. Updates every 3 seconds; not a handshake monitor.')
         print('The installer PC public IP does not prove the route used by other LAN devices.')
     except BaseException:
         # Capture the failed state BEFORE rollback changes it; do not hide the original exception.
@@ -743,6 +788,7 @@ def parser():
     p.add_argument('--wan', help='WAN DHCP interface')
     p.add_argument('--disk', help='USB partition slot')
     p.add_argument('--no-mode', action='store_true')
+    p.add_argument('--no-led', action='store_true', help='preserve the current LED configuration')
     p.add_argument('--output', type=Path, help='report/backup directory; default: current directory/awg-run-TIMESTAMP')
     return p
 
@@ -758,7 +804,7 @@ def main(argv=None):
             args.host = args.host or ask('MikroTik IP', '192.168.3.1')
         else:
             s = Settings(args.lan or ask('LAN subnet', '192.168.3.0/24'), args.bridge or ask('LAN bridge', 'bridge'),
-                         args.wan or ask('WAN DHCP interface', 'ether1'), args.disk or ask('USB partition', 'usb1-part1'), not args.no_mode).validate()
+                         args.wan or ask('WAN DHCP interface', 'ether1'), args.disk or ask('USB partition', 'usb1-part1'), not args.no_mode, not args.no_led).validate()
             args.config = args.config or Path(ask('Path to your AWG .conf on this PC'))
             c = parse_config(args.config, resolve=not args.dry_run)
             if args.dry_run:

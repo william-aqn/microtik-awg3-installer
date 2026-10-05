@@ -8,6 +8,7 @@ param(
     [string]$Wan,
     [string]$Disk,
     [switch]$NoMode,
+    [switch]$NoLed,
     [string]$OutputDir,
     [string]$Rollback,
     [string]$UserName = 'admin',
@@ -15,7 +16,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $baseUrl = 'https://raw.githubusercontent.com/william-aqn/microtik-awg3-installer/main'
-$pythonSha256 = '97be6222d4abd1e6eba3443241b698fa35144677c5f22a0d5f00af37c330ea4c'
+$pythonSha256 = 'ff94b966ddb69fac171e98e72d0d36714a3e7ce69aab5c7ae59c4c37699b1b55'
 $runtimeRoot = Join-Path $env:LOCALAPPDATA 'awg-mikrotik'
 $venvPath = Join-Path $runtimeRoot 'venv'
 $pythonPath = Join-Path $venvPath 'Scripts\python.exe'
@@ -53,6 +54,7 @@ try {
     if ($Diag) { $wizardArgs += '--diag' }
     if ($DryRun) { $wizardArgs += '--dry-run' }
     if ($NoMode) { $wizardArgs += '--no-mode' }
+    if ($NoLed) { $wizardArgs += '--no-led' }
     foreach ($pair in @(
         @('--host', $HostName), @('--config', $Config), @('--lan', $Lan),
         @('--bridge', $Bridge), @('--wan', $Wan), @('--disk', $Disk),

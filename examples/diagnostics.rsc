@@ -7,6 +7,8 @@
     /container/print
     /disk/print
     /system/routerboard/mode-button/print
+    /system/leds/print detail where leds="user-led"
+    /system/scheduler/print detail where name="awg-led"
     /routing/rule/print detail where comment~"^AWG3 "
     /ip/route/print detail where routing-table=to-awg
     /ip/firewall/filter/print stats where comment~"^AWG3 "

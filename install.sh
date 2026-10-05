@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 BASE_URL="https://raw.githubusercontent.com/william-aqn/microtik-awg3-installer/main"
-PYTHON_SHA256="97be6222d4abd1e6eba3443241b698fa35144677c5f22a0d5f00af37c330ea4c"
+PYTHON_SHA256="ff94b966ddb69fac171e98e72d0d36714a3e7ce69aab5c7ae59c4c37699b1b55"
 RUNTIME_ROOT="${XDG_CACHE_HOME:-$HOME/.cache}/awg-mikrotik"
 VENV="$RUNTIME_ROOT/venv"
 SCRIPT="$RUNTIME_ROOT/awg-mikrotik.py"
