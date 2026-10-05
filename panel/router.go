@@ -192,7 +192,7 @@ func applyScript(s Settings, state Saved, slot string) string {
 		other = "b"
 	}
 	var b strings.Builder
-	b.WriteString(":if ([:len [/system/script/job/find where script=\"awg-toggle\" or script=\"awg-toggle-base\" or script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" }; :local committed false;\n:onerror applyError in={\n")
+	b.WriteString(":if ([:len [/system/script/job/find where script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" }; :local committed false;\n:onerror applyError in={\n")
 	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-ready\"];\n")
 	b.WriteString(clearSlot(slot))
 	// RouterOS rejects two FWD records with the same name and type, even when
@@ -225,48 +225,6 @@ func applyScript(s Settings, state Saved, slot string) string {
 	b.WriteString("/ip/firewall/address-list/add list=AWG3UI-ready address=" + s.LAN + " dynamic=yes comment=" + rq(Tag+"ready") + ";\n")
 	b.WriteString("} do={ :if ($committed = false) do={ " + clearSlot(slot) + " }; :log error (\"AWG3UI: apply failed: \" . $applyError); :error (\"Panel apply failed: \" . $applyError) };\n")
 	return b.String()
-}
-func (r *Router) toggle(ctx context.Context) error {
-	before, e := r.rows(ctx, "routing/rule", "disabled", "comment=AWG3 switch LAN")
-	if e != nil {
-		return e
-	}
-	if len(before) != 1 {
-		return errors.New("AWG switch missing")
-	}
-	// Run independently of REST's 60-second command deadline. Native script jobs
-	// also serialize the physical button against panel operations across users.
-	if e = r.call(ctx, "POST", "execute", Row{"script": "/system/script/run awg-toggle"}, nil); e != nil {
-		return e
-	}
-	deadline := time.NewTimer(100 * time.Second)
-	defer deadline.Stop()
-	tick := time.NewTicker(time.Second)
-	defer tick.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return errors.New("Toggle is still running; inspect diagnostics before retrying")
-		case <-tick.C:
-			jobs, e := r.rows(ctx, "system/script/job", "script", "script=awg-toggle", "script=awg-toggle-base", "#|")
-			if e != nil {
-				return e
-			}
-			if len(jobs) > 0 {
-				continue
-			}
-			after, e := r.rows(ctx, "routing/rule", "disabled", "comment=AWG3 switch LAN")
-			if e != nil {
-				return e
-			}
-			if len(after) != 1 || after[0]["disabled"] == before[0]["disabled"] {
-				return errors.New("VPN did not reach the requested state; inspect tunnel diagnostics")
-			}
-			return nil
-		}
-	}
 }
 func (r *Router) apply(ctx context.Context, state Saved) error {
 	state.Policy = state.Policy.Clone()

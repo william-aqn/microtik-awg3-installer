@@ -34,3 +34,7 @@ jobs:
         working-directory: panel
       - run: CGO_ENABLED=0 GOOS=linux GOARCH=arm GOARM=7 go build -trimpath -o /tmp/awg-panel .
         working-directory: panel
+      - run: docker build --platform linux/amd64 --provenance=false -t awg-control:test panel
+      - run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go test -c -o /tmp/awg-native-test
+        working-directory: panel
+      - run: docker run --rm --cap-add NET_ADMIN --device /dev/net/tun -e AWG_NATIVE_TEST=1 -v /tmp/awg-native-test:/native-test:ro --entrypoint /native-test awg-control:test -test.run=TestNativeEngineLifecycle -test.v

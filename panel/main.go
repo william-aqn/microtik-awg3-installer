@@ -18,10 +18,12 @@ import (
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -32,12 +34,15 @@ type App struct {
 	mu              sync.Mutex
 	s               Settings
 	router          *Router
+	profiles        *ProfileStore
+	tunnel          *Tunnel
 	state           Saved
 	busy            bool
 	message         string
 	lastError       string
 	demo            bool
 	demoEnabled     bool
+	demoProfile     Profile
 	sessions        map[string]time.Time
 	loginWindow     time.Time
 	loginAttempts   int
@@ -114,7 +119,11 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		case "/api/refresh":
 			a.start(w, r, "refresh")
 		case "/api/toggle":
-			a.start(w, r, "toggle")
+			a.tunnelAPI(w, r, "toggle")
+		case "/api/connect", "/api/disconnect", "/api/restart", "/api/rollback", "/api/poweroff":
+			a.tunnelAPI(w, r, strings.TrimPrefix(r.URL.Path, "/api/"))
+		case "/api/profiles":
+			a.profileAPI(w, r)
 		case "/api/diagnostics":
 			if r.Method != "GET" {
 				apiError(w, 405, "GET required")
@@ -126,7 +135,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 			defer cancel()
-			d, _ := a.router.diagnostics(ctx)
+			d := a.diagnostics(ctx)
 			reply(w, 200, d)
 		case "/api/logout":
 			if r.Method != "POST" {
@@ -151,7 +160,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/style.css":
+	case "/", "/app.js", "/profiles.js", "/style.css":
 		sub, _ := fs.Sub(web, "web")
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	default:
@@ -226,18 +235,28 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	out["panel_heap_bytes"] = mem.Alloc
+	if a.profiles != nil {
+		out["profiles"] = a.profiles.List()
+	}
 	if a.demo {
 		out["router"] = []Row{{"board-name": "hAP ac^2", "version": "7.24.5", "free-memory": "29464985"}}
 		out["leases"] = []Row{{"mac-address": "02:00:00:00:00:01", "address": "192.168.3.20", "host-name": "Laptop", "status": "bound"}, {"mac-address": "02:00:00:00:00:02", "address": "192.168.3.21", "host-name": "Phone", "status": "bound"}, {"mac-address": "02:00:00:00:00:03", "address": "192.168.3.22", "host-name": "TV", "status": "bound"}}
 		a.mu.Lock()
 		out["vpn_enabled"] = a.demoEnabled
-		out["container_running"] = a.demoEnabled
+		out["container_running"] = true
+		out["tunnel"] = TunnelStatus{Enabled: a.demoEnabled, Connected: a.demoEnabled, ActiveID: a.demoProfile.ID, ActiveName: a.demoProfile.Name, ActiveRevision: a.demoProfile.Revision, Phase: "preview"}
 		a.mu.Unlock()
 		reply(w, 200, out)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 8*time.Second)
 	defer cancel()
+	if a.tunnel != nil {
+		ts := a.tunnel.Status(ctx)
+		out["tunnel"] = ts
+		out["vpn_enabled"] = ts.Enabled
+		out["container_running"] = true
+	}
 	resources, e := a.router.rows(ctx, "system/resource", "board-name,version,free-memory,free-hdd-space,cpu-load")
 	if e != nil {
 		out["router_error"] = e.Error()
@@ -250,14 +269,6 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		out["router_error"] = e.Error()
 	}
 	out["leases"] = leases
-	rules, e := a.router.rows(ctx, "routing/rule", "disabled", "comment=AWG3 switch LAN")
-	if e == nil && len(rules) == 1 {
-		out["vpn_enabled"] = rules[0]["disabled"] == "false"
-	}
-	containers, e := a.router.rows(ctx, "container", "running", "name=awg3")
-	if e == nil && len(containers) == 1 {
-		out["container_running"] = containers[0]["running"] == "true"
-	}
 	ready, e := a.router.rows(ctx, "ip/firewall/address-list", "address", "list=AWG3UI-ready")
 	out["geo_ready"] = e == nil && len(ready) == 1
 	reply(w, 200, out)
@@ -323,7 +334,7 @@ func (a *App) work(kind string, p Policy) {
 	defer func() {
 		if err != nil && !a.demo {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			d, _ := a.router.diagnostics(ctx)
+			d := a.diagnostics(ctx)
 			cancel()
 			d["error"] = err.Error()
 			if e := writeJSON(filepath.Join(a.s.DataDir, "last-error.json"), d); e != nil {
@@ -346,16 +357,16 @@ func (a *App) work(kind string, p Policy) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
-	if kind == "toggle" {
-		err = a.router.toggle(ctx)
-		return
-	}
 	a.mu.Lock()
 	old := a.state
 	a.message = "Downloading and validating selected lists"
 	a.mu.Unlock()
 	b := old.Bundle
 	if kind == "refresh" || old.Revision == "" || !sameSources(old.Policy, p) {
+		if len(p.GeoIP)+len(p.GeoSite)+len(p.Antifilter) > 0 && !a.tunnel.Status(ctx).Connected {
+			err = errors.New("Connect a VPN profile before downloading Geo lists")
+			return
+		}
 		b, err = compileSources(ctx, p, a.s.DataDir)
 		if err != nil {
 			return
@@ -401,16 +412,29 @@ func (a *App) maintenance() {
 	a.busy = true
 	a.message = "Restoring USB list snapshot"
 	a.mu.Unlock()
+	if state.Revision == "" {
+		state.Revision = randomID()[:16]
+	}
 	if state.Revision != "" {
 		e := a.router.apply(ctx, state)
 		if e == nil {
 			e = writeJSON(filepath.Join(a.s.DataDir, "state.json"), state)
+		}
+		if e == nil {
+			a.mu.Lock()
+			a.state = state
+			a.mu.Unlock()
+			e = a.tunnel.Restore(ctx)
+		}
+		if e != nil {
+			a.saveDiagnostic(e)
 		}
 		a.finish(e)
 	} else {
 		a.finish(nil)
 	}
 	cancel()
+	go a.watchTunnel()
 	tick := time.NewTicker(time.Minute)
 	defer tick.Stop()
 	for range tick.C {
@@ -459,8 +483,8 @@ func (a *App) maintenance() {
 	}
 }
 func validateSettings(s Settings) error {
-	if s.RouterURL != "http://172.18.21.1" {
-		return errors.New("Router API must use the isolated 172.18.21.1 management link")
+	if s.RouterURL != "http://172.18.20.1" || s.Gateway != "172.18.20.1" || !ifaceName.MatchString(s.Uplink) {
+		return errors.New("Router API must use the 172.18.20.1 container link and a valid uplink")
 	}
 	p, e := netip.ParsePrefix(s.LAN)
 	if e != nil || !p.Addr().Is4() || !p.Addr().IsPrivate() || p.Bits() != 24 || p != p.Masked() {
@@ -483,8 +507,24 @@ func run() error {
 	config := flag.String("config", "/data/settings.json", "Private settings file")
 	demo := flag.Bool("demo", false, "Read-only router preview on 127.0.0.1:9865")
 	diag := flag.Bool("diag", false, "Print sanitized router diagnostics and exit")
+	control := flag.String("control", "", "Local controller command: toggle, connect, disconnect, restart, rollback or diag")
 	check := flag.String("check-sources", "", "Validate a policy JSON and download lists, without a router")
+	checkProfile := flag.String("check-profile", "", "Validate a native config without connecting or printing secrets")
 	flag.Parse()
+	if *control != "" {
+		return controlCLI(*control)
+	}
+	if *checkProfile != "" {
+		b, e := os.ReadFile(*checkProfile)
+		if e != nil {
+			return errors.New("Cannot read profile file")
+		}
+		if _, e = parseVPNConfig(string(b)); e != nil {
+			return e
+		}
+		fmt.Println("Profile valid. IPv4 mode; no network changes made.")
+		return nil
+	}
 	if *check != "" {
 		var p Policy
 		if e := readJSON(*check, &p); e != nil {
@@ -496,9 +536,15 @@ func run() error {
 		}
 		return json.NewEncoder(os.Stdout).Encode(map[string]any{"ips": len(b.IPs), "domains": len(b.Domains), "ipv6_skipped": b.IPv6Skipped, "downloaded": b.Downloaded})
 	}
-	a := &App{demo: *demo, demoEnabled: true, sessions: map[string]time.Time{}, state: Saved{Policy: defaultPolicy()}, message: "Ready"}
+	a := &App{demo: *demo, sessions: map[string]time.Time{}, state: Saved{Policy: defaultPolicy()}, message: "Ready"}
 	if *demo {
 		a.s = Settings{Listen: "127.0.0.1:9865", Hosts: []string{"127.0.0.1:9865", "localhost:9865"}}
+		dir, e := os.MkdirTemp("", "awg-control-preview-")
+		if e != nil {
+			return e
+		}
+		defer os.RemoveAll(dir)
+		a.profiles, _ = openProfiles(dir)
 	} else {
 		if e := readJSON(*config, &a.s); e != nil {
 			return errors.New("Cannot read private settings file")
@@ -507,6 +553,15 @@ func run() error {
 			return e
 		}
 		a.router = newRouter(a.s)
+		var e error
+		a.profiles, e = openProfiles(a.s.DataDir)
+		if e != nil {
+			return e
+		}
+		a.tunnel, e = openTunnel(a.s.DataDir, &LinuxTunnel{uplink: a.s.Uplink, gateway: a.s.Gateway}, a.router)
+		if e != nil {
+			return e
+		}
 		if e := readJSON(filepath.Join(a.s.DataDir, "state.json"), &a.state); e != nil && !errors.Is(e, os.ErrNotExist) {
 			return e
 		}
@@ -517,15 +572,34 @@ func run() error {
 			return e
 		}
 		if *diag {
-			d, _ := a.router.diagnostics(context.Background())
+			d := a.diagnostics(context.Background())
 			return json.NewEncoder(os.Stdout).Encode(d)
 		}
 		a.busy = true
+		if e := a.listenControl(); e != nil {
+			return e
+		}
 		go a.maintenance()
 	}
 	server := &http.Server{Addr: a.s.Listen, Handler: http.HandlerFunc(a.serve), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 20 * time.Second, MaxHeaderBytes: 8192}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		<-signals
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if a.tunnel != nil {
+			_ = a.tunnel.driver.Stop(ctx)
+		}
+		_ = server.Shutdown(ctx)
+	}()
 	log.Printf("AWG panel %s listening on %s; preview=%t", Version, a.s.Listen, *demo)
-	return server.ListenAndServe()
+	err := server.ListenAndServe()
+	if errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 func main() {
 	if e := run(); e != nil {

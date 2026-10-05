@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	Version     = "0.1.1"
+	Version     = "0.2.0"
 	MaxIPs      = 512
 	MaxDomains  = 256
 	MaxDevices  = 24
@@ -62,6 +62,8 @@ type Settings struct {
 	LAN            string   `json:"lan"`
 	Bridge         string   `json:"bridge"`
 	DataDir        string   `json:"data_dir"`
+	Uplink         string   `json:"uplink"`
+	Gateway        string   `json:"gateway"`
 }
 
 var sourceName = regexp.MustCompile(`^[a-z0-9][a-z0-9!-]{0,63}$`)

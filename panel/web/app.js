@@ -52,12 +52,15 @@ function collect(){return {default:$('default').value,devices:[...devices.values
 async function update(){
   try {
     const data = await api('state'); current=data;$('login').hidden=true;$('app').hidden=false;$('preview').hidden=!data.preview;
-    $('version').textContent='v'+data.version;$('vpn-state').textContent=typeof data.vpn_enabled==='boolean'?(data.vpn_enabled?'Enabled':'Disabled'):'Unknown';$('vpn-dot').className='status-dot'+(data.vpn_enabled&&data.container_running?' on':'');
-    $('vpn-detail').textContent=typeof data.container_running==='boolean'?(data.container_running?'AWG container running':'AWG container stopped'):'AWG state unavailable';
+    const tunnel=data.tunnel||{};
+    $('version').textContent='v'+data.version;$('vpn-state').textContent=tunnel.connected?'Connected':tunnel.enabled?(data.busy?'Connecting':'No connection'):'Disconnected';$('vpn-dot').className='status-dot'+(tunnel.connected?' on':'');
+    $('toggle').textContent=tunnel.connected?'Disconnect':'Connect';
+    $('vpn-detail').textContent=tunnel.active_name||'Panel stays available when VPN is off.';
     const router=data.router?.[0];$('memory').textContent=router?(Number(router['free-memory'])/1048576).toFixed(1)+' MiB free':'Unavailable';$('router-name').textContent=router?router['board-name']+' / RouterOS '+router.version:'Router connection unavailable';
     $('ip-count').textContent=data.bundle.ips?.length||0;$('domain-count').textContent=data.bundle.domains?.length||0;
     $('updated').textContent=data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
     for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy||!!data.router_error;
+    renderProfiles(data);
     if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.message,data.router_error||data.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
   } catch(e) { if(!$('app').hidden)message(e.message,'error'); }
@@ -67,10 +70,10 @@ async function action(kind){
 }
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('login',{password:$('password').value});$('password').value='';$('login-error').textContent='';await update();}catch(e){$('login-error').textContent=e.message;}});
 $('save').addEventListener('click',()=>action('apply'));$('refresh').addEventListener('click',()=>action('refresh'));$('toggle').addEventListener('click',()=>action('toggle'));
-$('logout').addEventListener('click',async()=>{await api('logout',{});$('app').hidden=true;$('login').hidden=false;});
+$('logout').addEventListener('click',async()=>{await api('logout',{});closeProfile();$('app').hidden=true;$('login').hidden=false;});
 for(const id of ['default','geoip','geosite','auto-update'])$(id).addEventListener('input',changed);
 document.querySelectorAll('#antifilter-options input').forEach(c=>c.addEventListener('change',changed));
-document.querySelectorAll('.nav').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===button));}));
+document.querySelectorAll('.nav').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===button));$('save').hidden=!['devices','lists'].includes(button.dataset.tab);}));
 $('add-device').addEventListener('click',()=>{const mac=$('manual-mac').value.trim().toUpperCase(),name=$('manual-name').value.trim()||'Unnamed device';if(!/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)||devices.has(mac)){message('Enter a unique MAC address','error');return;}devices.set(mac,{mac,name,mode:'inherit',address:'Manual entry'});dirty=true;drawRows();$('manual-mac').value='';$('manual-name').value='';message('Choose a route for the new device, then apply.');});
 $('load-diag').addEventListener('click',async()=>{try{$('diag-output').textContent='Collecting...';$('diag-output').textContent=JSON.stringify(await api('diagnostics'),null,2);}catch(e){$('diag-output').textContent=e.message;}});
-update();setInterval(()=>{if(!document.hidden)update();},10000);
+initProfiles();update();setInterval(()=>{if(!document.hidden)update();},5000);

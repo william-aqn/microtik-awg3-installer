@@ -16,6 +16,8 @@ error.txt
 before-awg.rsc
 after-awg.rsc
 awg-panel-private*/
+awg-control-private*/
+awg-control-run-*/
 panel/awg-panel
 panel/awg-panel.exe
 panel/settings.json
