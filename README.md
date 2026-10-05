@@ -114,8 +114,6 @@ bash awg-install.sh --rollback ./awg-run-YYYYMMDD-HHMMSS/rollback.json --host 19
 
 В Linux параметры те же в форме `--dry-run --config … --lan …`. В каталоге появятся `prepare.rsc`, `toggle.rsc`, `diagnostics.rsc` без приватных ключей. `prepare.rsc` показывает сетевые объекты и скрипты; это **не вся установка**: загрузку образа/конфига, создание контейнера, backup и проверки выполняет Python-мастер.
 
-Исходники поддерживаются в отдельном [репозитории microtik-awg3-installer](https://github.com/william-aqn/microtik-awg3-installer): [мастер Python](awg-mikrotik.py), [Linux/macOS](install.sh), [PowerShell](install.ps1).
-
 ## Как настраивали вручную в WebFig
 
 Дальше — воспроизведение итоговой рабочей схемы. В тексте и примерах Endpoint заменён документационным адресом `203.0.113.10`, а ключи не опубликованы. Этот адрес нужно заменить своим; подключиться к нему нельзя.
