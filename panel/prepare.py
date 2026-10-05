@@ -92,7 +92,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password):
         f'/system/backup/save name={quote(disk + "/before-awg-panel")}',
         '/interface/veth/add name=awg-ui-veth address=172.18.21.2/30 gateway=172.18.21.1 comment="AWG3UI veth"',
         '/ip/address/add address=172.18.21.1/30 interface=awg-ui-veth comment="AWG3UI management"',
-        '/user/group/add name=awg-panel policy=read,write,test,rest-api',
+        '/user/group/add name=awg-panel policy=read,write,test,api,rest-api',
         f'/user/add name=awg-panel group=awg-panel address=172.18.21.2/32 password={quote(api_password)} comment="AWG3UI service"',
         # Do not widen a restricted www service silently. Require the operator
         # to have allowed the management /32 before importing this bundle.
@@ -126,6 +126,17 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password):
             f'/ip/firewall/filter/add chain=forward in-interface-list=WAN src-address={upstream} out-interface=awg-ui-veth protocol=tcp dst-port=8088 action=accept comment="AWG3UI temporary upstream" place-before=0',
             f'/ip/firewall/nat/add chain=dstnat in-interface-list=WAN src-address={upstream} dst-address={wan_address} protocol=tcp dst-port=8088 action=dst-nat to-addresses=172.18.21.2 to-ports=8088 comment="AWG3UI temporary upstream" place-before=0',
         ]
+    # Numeric menu positions stay bound during an import. Put each exception
+    # before its named guard instead of assuming place-before=0 reverses order.
+    for i, line in enumerate(setup):
+        if line.startswith('/ip/firewall/filter/add ') and 'action=accept' in line:
+            if 'chain=input' in line:
+                guard = 'AWG3UI input guard'
+            elif 'out-interface=awg-ui-veth' in line:
+                guard = 'AWG3UI access guard'
+            else:
+                continue
+            setup[i] = line.replace('place-before=0', f'place-before=[find where comment="{guard}"]')
     rollback = f'''\
 # Removes only AWG3UI-owned integration. USB files are retained for recovery.
 /ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "]

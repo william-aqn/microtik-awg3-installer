@@ -52,12 +52,12 @@ function collect(){return {default:$('default').value,devices:[...devices.values
 async function update(){
   try {
     const data = await api('state'); current=data;$('login').hidden=true;$('app').hidden=false;$('preview').hidden=!data.preview;
-    $('version').textContent='v'+data.version;$('vpn-state').textContent=data.vpn_enabled?'Enabled':'Disabled';$('vpn-dot').className='status-dot'+(data.vpn_enabled&&data.container_running?' on':'');
-    $('vpn-detail').textContent=data.container_running?'AWG container running':'AWG container stopped';
+    $('version').textContent='v'+data.version;$('vpn-state').textContent=typeof data.vpn_enabled==='boolean'?(data.vpn_enabled?'Enabled':'Disabled'):'Unknown';$('vpn-dot').className='status-dot'+(data.vpn_enabled&&data.container_running?' on':'');
+    $('vpn-detail').textContent=typeof data.container_running==='boolean'?(data.container_running?'AWG container running':'AWG container stopped'):'AWG state unavailable';
     const router=data.router?.[0];$('memory').textContent=router?(Number(router['free-memory'])/1048576).toFixed(1)+' MiB free':'Unavailable';$('router-name').textContent=router?router['board-name']+' / RouterOS '+router.version:'Router connection unavailable';
     $('ip-count').textContent=data.bundle.ips?.length||0;$('domain-count').textContent=data.bundle.domains?.length||0;
     $('updated').textContent=data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
-    for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy;
+    for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy||!!data.router_error;
     if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.message,data.router_error||data.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
   } catch(e) { if(!$('app').hidden)message(e.message,'error'); }

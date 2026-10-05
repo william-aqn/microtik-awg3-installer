@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	Version     = "0.1.0"
+	Version     = "0.1.1"
 	MaxIPs      = 512
 	MaxDomains  = 256
 	MaxDevices  = 24

@@ -168,7 +168,7 @@ func TestPolicyRoutingSemantics(t *testing.T) {
 }
 func TestApplyKeepsGeoClosedUntilCommitAndCleanup(t *testing.T) {
 	s := Settings{LAN: "192.168.3.0/24"}
-	state := Saved{Policy: defaultPolicy(), Bundle: Bundle{IPs: []string{"1.1.1.0/24"}}, Revision: "1234"}
+	state := Saved{Policy: defaultPolicy(), Bundle: Bundle{IPs: []string{"1.1.1.0/24"}, Domains: []Domain{{Name: "example.com", Suffix: true}}}, Revision: "1234"}
 	src := applyScript(s, state, "b")
 	guard := strings.Index(src, `remove [find where list="AWG3UI-ready"]`)
 	stage := strings.Index(src, `"1.1.1.0/24"`)
@@ -177,8 +177,16 @@ func TestApplyKeepsGeoClosedUntilCommitAndCleanup(t *testing.T) {
 	if !(guard >= 0 && stage > guard && commit > stage && ready > commit) {
 		t.Fatal("invalid transaction ordering")
 	}
-	if !strings.Contains(src, "timeout=none-dynamic") || !strings.Contains(src, `/system/script/job/find`) {
+	if !strings.Contains(src, "dynamic=yes") || !strings.Contains(src, `/system/script/job/find`) {
 		t.Fatal("volatile data or cross-user serialization missing")
+	}
+	dnsRemove := strings.Index(src, `remove [find where comment="AWG3UI dns-a"]`)
+	dnsAdd := strings.Index(src, `/ip/dns/static/add`)
+	if !(dnsRemove > guard && dnsAdd > dnsRemove && commit > dnsAdd) {
+		t.Fatal("old FWD records would conflict with staged names")
+	}
+	if !strings.Contains(src, `:onerror applyError`) || !strings.Contains(src, `:error ("Panel apply failed: " . $applyError)`) {
+		t.Fatal("original RouterOS runtime error is lost")
 	}
 	if strings.Contains(src, "PrivateKey") || strings.Contains(src, "/user/") {
 		t.Fatal("unrelated sensitive mutation")

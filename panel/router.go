@@ -192,15 +192,19 @@ func applyScript(s Settings, state Saved, slot string) string {
 		other = "b"
 	}
 	var b strings.Builder
-	b.WriteString(":if ([:len [/system/script/job/find where script=\"awg-toggle\" or script=\"awg-toggle-base\" or script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" }; :local committed false;\n:do {\n")
+	b.WriteString(":if ([:len [/system/script/job/find where script=\"awg-toggle\" or script=\"awg-toggle-base\" or script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" }; :local committed false;\n:onerror applyError in={\n")
 	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-ready\"];\n")
 	b.WriteString(clearSlot(slot))
+	// RouterOS rejects two FWD records with the same name and type, even when
+	// they populate different address lists. Geo is fail-closed until READY is
+	// restored, so replace the old DNS records before staging the new set.
+	b.WriteString("/ip/dns/static/remove [find where comment=" + rq(Tag+"dns-"+other) + "];\n")
 	if len(state.Bundle.IPs) > 0 {
 		items := make([]string, 0, len(state.Bundle.IPs))
 		for _, ip := range state.Bundle.IPs {
 			items = append(items, rq(ip))
 		}
-		b.WriteString(":foreach ip in={" + strings.Join(items, ";") + "} do={ /ip/firewall/address-list/add list=AWG3UI-ip-" + slot + " address=$ip timeout=none-dynamic comment=" + rq(Tag+"data") + "; };\n")
+		b.WriteString(":foreach ip in={" + strings.Join(items, ";") + "} do={ /ip/firewall/address-list/add list=AWG3UI-ip-" + slot + " address=$ip dynamic=yes comment=" + rq(Tag+"data") + "; };\n")
 	}
 	if len(state.Bundle.Domains) > 0 {
 		items := make([]string, 0, len(state.Bundle.Domains))
@@ -218,8 +222,8 @@ func applyScript(s Settings, state Saved, slot string) string {
 	b.WriteString(clearSlot(other))
 	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-dns-a\" or list=\"AWG3UI-dns-b\"];\n")
 	b.WriteString(flushConnections(s.LAN))
-	b.WriteString("/ip/firewall/address-list/add list=AWG3UI-ready address=" + s.LAN + " timeout=none-dynamic comment=" + rq(Tag+"ready") + ";\n")
-	b.WriteString("} on-error={ :if ($committed = false) do={ " + clearSlot(slot) + " }; :log error \"AWG3UI: apply failed; Geo stays on VPN until recovery\"; :error \"Panel apply failed\" };\n")
+	b.WriteString("/ip/firewall/address-list/add list=AWG3UI-ready address=" + s.LAN + " dynamic=yes comment=" + rq(Tag+"ready") + ";\n")
+	b.WriteString("} do={ :if ($committed = false) do={ " + clearSlot(slot) + " }; :log error (\"AWG3UI: apply failed: \" . $applyError); :error (\"Panel apply failed: \" . $applyError) };\n")
 	return b.String()
 }
 func (r *Router) toggle(ctx context.Context) error {
@@ -312,7 +316,7 @@ func (r *Router) diagnostics(ctx context.Context) (map[string]any, error) {
 		{"resource", "system/resource", "version,board-name,free-memory,free-hdd-space,uptime,cpu-load", nil},
 		{"containers", "container", "name,running,stopped,error,memory-current", nil},
 		{"routing", "routing/rule", "comment,disabled,table,src-address,dst-address", nil},
-		{"mangle", "ip/firewall/mangle", "comment,chain,jump-target,disabled,packets,bytes", nil},
+		{"mangle", "ip/firewall/mangle", ".id,comment,chain,action,jump-target,new-routing-mark,src-mac-address,src-address-list,dst-address-list,dst-address,disabled,packets,bytes", nil},
 		{"ready", "ip/firewall/address-list", "list,address", []string{"list=AWG3UI-ready"}},
 	}
 	for _, c := range checks {
