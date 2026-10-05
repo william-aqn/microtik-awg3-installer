@@ -101,6 +101,13 @@ class PanelPrepareTests(unittest.TestCase):
         self.assertIn('--control connect', setup)
         self.assertNotIn('reset-button', setup)
 
+    def test_mode_does_not_require_admin_policy_or_bypass_permissions(self):
+        _, setup, _ = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
+        mode = next(line for line in setup.splitlines() if line.startswith('/system/script/add name=awg-mode '))
+        permissions = mode.split(' policy=', 1)[1].split(' ', 1)[0].split(',')
+        self.assertEqual(set(permissions), {'read', 'write', 'test'})
+        self.assertNotIn('dont-require-permissions=yes', setup)
+
     def test_migration_parks_legacy_engine_and_has_restore(self):
         prior = {'router_user': 'awg-panel', 'router_password': 'a' * 48, 'password_salt': 'b' * 32, 'password_hash': 'c' * 64}
         settings, setup, rollback = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, '', migration=True, prior_settings=prior)

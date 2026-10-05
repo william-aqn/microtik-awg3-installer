@@ -195,7 +195,9 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     setup += [
         ':if ([:len [/system/leds/find where leds="user-led"]] = 0) do={ /system/leds/add leds=user-led type=off }',
         '/system/leds/set [find where leds="user-led"] type=off',
-        f'/system/script/add name=awg-mode policy=read,write,test,policy source={{\n{mode_script(str(network))}}}',
+        # Mode runs with restricted event permissions. Requiring the unused
+        # "policy" right prevents physical presses from starting this script.
+        f'/system/script/add name=awg-mode policy=read,write,test source={{\n{mode_script(str(network))}}}',
         '/system/routerboard/mode-button/set enabled=yes hold-time=0s..3s on-event=awg-mode',
         f'/container/mounts/add list=awg_control_mount src={quote(disk + "/awg-control-data")} dst=/data',
         f'/container/add file={quote(disk + "/awg-control.tar")} name=awg-control interface=docker-awg-veth root-dir={quote(disk + "/awg-control-root")} mountlists=awg_control_mount dns=172.18.20.1 logging=yes start-on-boot=yes memory-high=25165824 memory-max=33554432',
