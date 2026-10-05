@@ -1,5 +1,7 @@
 # AWG Control для MikroTik hAP ac²
 
+Основная идея взята из проекта [catesin/AmneziaWG-MikroTik](https://github.com/catesin/AmneziaWG-MikroTik).
+
 AmneziaWG и веб-панель в одном контейнере: импорт и переключение VPN-профилей, маршруты Direct / Geo / VPN для отдельных устройств, управление кнопками и индикатором USR.
 
 ## Установка
