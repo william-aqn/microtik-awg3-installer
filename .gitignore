@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+awg-run-*/
+awg-bootstrap-error.txt
+*.conf
+*.backup
+*.tar
+*.tar.gz
+*.npk
+*.log
+rollback.json
+diagnostics.txt
+error.txt
+before-awg.rsc
+after-awg.rsc
