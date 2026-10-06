@@ -33,6 +33,7 @@ var web embed.FS
 type App struct {
 	mu              sync.Mutex
 	s               Settings
+	configPath      string
 	router          *Router
 	profiles        *ProfileStore
 	tunnel          *Tunnel
@@ -124,6 +125,8 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 			a.tunnelAPI(w, r, strings.TrimPrefix(r.URL.Path, "/api/"))
 		case "/api/profiles":
 			a.profileAPI(w, r)
+		case "/api/password":
+			a.passwordAPI(w, r)
 		case "/api/diagnostics":
 			if r.Method != "GET" {
 				apiError(w, 405, "GET required")
@@ -160,7 +163,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/profiles.js", "/style.css", "/geo.css":
+	case "/", "/app.js", "/profiles.js", "/password.js", "/style.css", "/geo.css", "/password.css":
 		sub, _ := fs.Sub(web, "web")
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	default:
@@ -200,19 +203,27 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Password string `json:"password"`
 	}
-	if e := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2048)).Decode(&body); e != nil {
+	if e := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxPasswordRequest)).Decode(&body); e != nil {
 		apiError(w, 400, "Invalid request")
 		return
 	}
-	salt, _ := hex.DecodeString(a.s.PasswordSalt)
-	expected, _ := hex.DecodeString(a.s.PasswordHash)
-	hash, e := pbkdf2.Key(sha256.New, body.Password, salt, 100000, 32)
+	a.mu.Lock()
+	saltText, hashText := a.s.PasswordSalt, a.s.PasswordHash
+	a.mu.Unlock()
+	salt, _ := hex.DecodeString(saltText)
+	expected, _ := hex.DecodeString(hashText)
+	hash, e := pbkdf2.Key(sha256.New, body.Password, salt, PasswordIterations, 32)
 	if e != nil || subtle.ConstantTimeCompare(hash, expected) != 1 {
 		apiError(w, 401, "Incorrect panel password")
 		return
 	}
 	token := randomID()
 	a.mu.Lock()
+	if a.s.PasswordSalt != saltText || a.s.PasswordHash != hashText {
+		a.mu.Unlock()
+		apiError(w, 401, "Password changed; sign in again")
+		return
+	}
 	for t, expiry := range a.sessions {
 		if time.Now().After(expiry) {
 			delete(a.sessions, t)
@@ -225,7 +236,7 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 	}
 	a.sessions[token] = time.Now().Add(8 * time.Hour)
 	a.mu.Unlock()
-	http.SetCookie(w, &http.Cookie{Name: "awg_session", Value: token, Path: "/", MaxAge: 8 * 3600, HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode})
+	sessionCookie(w, r, token)
 	reply(w, 200, map[string]bool{"ok": true})
 }
 func (a *App) status(w http.ResponseWriter, r *http.Request) {
@@ -557,6 +568,7 @@ func run() error {
 		defer os.RemoveAll(dir)
 		a.profiles, _ = openProfiles(dir)
 	} else {
+		a.configPath = *config
 		if e := readJSON(*config, &a.s); e != nil {
 			return errors.New("Cannot read private settings file")
 		}

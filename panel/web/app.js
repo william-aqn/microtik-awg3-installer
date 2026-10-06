@@ -9,7 +9,7 @@ async function api(path, body) {
   if (body !== undefined) { options.method = 'POST'; options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(body); }
   const response = await fetch('/api/' + path, options);
   const value = await response.json();
-  if (response.status === 401) { $('login').hidden = false; $('app').hidden = true; }
+  if (response.status === 401) { $('password-form').reset(); $('login').hidden = false; $('app').hidden = true; }
   if (!response.ok) throw new Error(value.error || 'Request failed');
   return value;
 }
@@ -86,10 +86,10 @@ async function action(kind){
 }
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('login',{password:$('password').value});$('password').value='';$('login-error').textContent='';await update();}catch(e){$('login-error').textContent=e.message;}});
 $('save').addEventListener('click',()=>action('apply'));$('refresh').addEventListener('click',()=>action('refresh'));$('toggle').addEventListener('click',()=>action('toggle'));
-$('logout').addEventListener('click',async()=>{await api('logout',{});closeProfile();$('app').hidden=true;$('login').hidden=false;});
+$('logout').addEventListener('click',async()=>{await api('logout',{});closeProfile();$('password-form').reset();$('password-result').textContent='';$('app').hidden=true;$('login').hidden=false;});
 for(const id of ['default','geoip','geosite','auto-update','custom-domains','custom-ips','custom-urls'])$(id).addEventListener('input',changed);
 document.querySelectorAll('#antifilter-options input').forEach(c=>c.addEventListener('change',changed));
 document.querySelectorAll('.nav').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===button));$('save').hidden=!['devices','lists'].includes(button.dataset.tab);}));
 $('add-device').addEventListener('click',()=>{const mac=$('manual-mac').value.trim().toUpperCase(),name=$('manual-name').value.trim()||'Unnamed device';if(!/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)||devices.has(mac)){message('Enter a unique MAC address','error');return;}devices.set(mac,{mac,name,mode:'inherit',address:'Manual entry'});dirty=true;drawRows();$('manual-mac').value='';$('manual-name').value='';message('Choose a route for the new device, then apply.');});
 $('load-diag').addEventListener('click',async()=>{try{$('diag-output').textContent='Collecting...';$('diag-output').textContent=JSON.stringify(await api('diagnostics'),null,2);}catch(e){$('diag-output').textContent=e.message;}});
-initProfiles();update();setInterval(()=>{if(!document.hidden)update();},5000);
+initProfiles();initPasswordForm();update();setInterval(()=>{if(!document.hidden)update();},5000);

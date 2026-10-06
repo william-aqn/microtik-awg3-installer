@@ -18,6 +18,10 @@ after-awg.rsc
 awg-panel-private*/
 awg-control-private*/
 awg-control-run-*/
+awg-password-reset-*/
+reset-password.rsc
+restore-password.rsc
+panel-password.txt
 panel/awg-panel
 panel/awg-panel.exe
 panel/settings.json
