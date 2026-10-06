@@ -100,3 +100,5 @@ python3 -m venv .venv &&
 Если войти уже не получается, из каталога репозитория запусти **`python panel/reset-password.py`**. Скрипт спросит только новый пароль и подготовит `reset-password.rsc`: загрузи его в `usb1-part1` через WinBox/WebFig и выполни в Terminal `/import file-name=usb1-part1/reset-password.rsc`. Нужен доступ администратора RouterOS. [Подробности и восстановление →](GOTCHAS.md#пароль-панели)
 
 [Подготовка, ограничения и диагностика →](GOTCHAS.md)
+
+Обсуждение — в [Telegram-сообществе](https://t.me/asusxray/37358).
