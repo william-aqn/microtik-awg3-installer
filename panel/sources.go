@@ -31,13 +31,17 @@ func download(ctx context.Context, url, path string, limit int64) error {
 		}
 		return errors.New("Unexpected download host")
 	}}
+	return downloadWithClient(ctx, c, url, path, limit)
+}
+
+func downloadWithClient(ctx context.Context, c *http.Client, url, path string, limit int64) error {
 	req, e := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if e != nil {
 		return e
 	}
 	resp, e := c.Do(req)
 	if e != nil {
-		return errors.New("Source download failed; check DNS, time and internet")
+		return errors.New("Source download failed; check public HTTPS URL, DNS, certificate, time and internet")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
@@ -311,6 +315,10 @@ func readGeoSite(f io.ReadSeeker, selected []string) ([]Domain, error) {
 }
 
 func compileSources(ctx context.Context, p Policy, dir string) (Bundle, error) {
+	return compileSourcesWith(ctx, p, dir, download, downloadCustom)
+}
+
+func compileSourcesWith(ctx context.Context, p Policy, dir string, fetch func(context.Context, string, string, int64) error, fetchCustom func(context.Context, string, string) error) (Bundle, error) {
 	p = p.Clone()
 	b := Bundle{Downloaded: time.Now().UTC().Format(time.RFC3339)}
 	if e := p.Validate(); e != nil {
@@ -325,6 +333,18 @@ func compileSources(ctx context.Context, p Policy, dir string) (Bundle, error) {
 	}
 	defer os.RemoveAll(tmp)
 	ips := map[string]bool{}
+	domains := map[string]Domain{}
+	for _, ip := range p.CustomIPs {
+		if e = addCustomIP(ips, ip); e != nil {
+			return b, e
+		}
+	}
+	for _, s := range p.CustomDomains {
+		d, _ := customDomain(s) // Policy.Validate already checked and normalized it.
+		if e = addDomain(domains, d); e != nil {
+			return b, e
+		}
+	}
 	urls := []string{}
 	for _, s := range p.GeoIP {
 		urls = append(urls, "https://raw.githubusercontent.com/Loyalsoldier/geoip/release/text/"+s+".txt")
@@ -334,7 +354,7 @@ func compileSources(ctx context.Context, p Policy, dir string) (Bundle, error) {
 	}
 	for _, url := range urls {
 		path := filepath.Join(tmp, "ip.txt")
-		if e = download(ctx, url, path, 4<<20); e != nil {
+		if e = fetch(ctx, url, path, 4<<20); e != nil {
 			return b, e
 		}
 		f, e := os.Open(path)
@@ -347,17 +367,13 @@ func compileSources(ctx context.Context, p Policy, dir string) (Bundle, error) {
 			return b, e
 		}
 	}
-	for ip := range ips {
-		b.IPs = append(b.IPs, ip)
-	}
-	sort.Strings(b.IPs)
 	if len(p.GeoSite) > 0 {
 		path := filepath.Join(tmp, "dlc.dat")
 		sumPath := filepath.Join(tmp, "sha256")
-		if e = download(ctx, dlcURL, path, MaxDownload); e != nil {
+		if e = fetch(ctx, dlcURL, path, MaxDownload); e != nil {
 			return b, e
 		}
-		if e = download(ctx, dlcURL+".sha256sum", sumPath, 1024); e != nil {
+		if e = fetch(ctx, dlcURL+".sha256sum", sumPath, 1024); e != nil {
 			return b, e
 		}
 		sum, e := os.ReadFile(sumPath)
@@ -380,12 +396,38 @@ func compileSources(ctx context.Context, p Policy, dir string) (Bundle, error) {
 		if hex.EncodeToString(h.Sum(nil)) != strings.ToLower(fields[0]) {
 			return b, errors.New("GeoSite checksum mismatch; retry after the upstream release finishes")
 		}
-		b.Domains, e = readGeoSite(f, p.GeoSite)
+		var selected []Domain
+		selected, e = readGeoSite(f, p.GeoSite)
 		if e != nil {
 			return b, e
 		}
+		for _, d := range selected {
+			if e = addDomain(domains, d); e != nil {
+				return b, e
+			}
+		}
 	}
-	if len(urls)+len(p.GeoSite) > 0 && len(b.IPs)+len(b.Domains) == 0 {
+	for i, url := range p.CustomURLs {
+		path := filepath.Join(tmp, "custom.txt")
+		if e = fetchCustom(ctx, url, path); e != nil {
+			return b, fmt.Errorf("Custom list %d: %w", i+1, e)
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return b, err
+		}
+		e = readCustomList(f, ips, domains)
+		f.Close()
+		if e != nil {
+			return b, fmt.Errorf("Custom list %d: %w", i+1, e)
+		}
+	}
+	for ip := range ips {
+		b.IPs = append(b.IPs, ip)
+	}
+	sort.Strings(b.IPs)
+	b.Domains = sortedDomains(domains)
+	if p.remoteSources() > 0 && len(b.IPs)+len(b.Domains) == 0 {
 		return b, errors.New("Selected sources have no supported IPv4 entries")
 	}
 	return b, b.Validate()

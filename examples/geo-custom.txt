@@ -1,0 +1,8 @@
+# Example custom Geo list. Replace these documentation entries with your own.
+# Domain and all subdomains:
+example.com
+# Exact hostname only:
+full:example.net
+# IPv4 subnet and a single address:
+203.0.113.0/24
+198.51.100.7

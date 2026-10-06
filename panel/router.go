@@ -251,7 +251,7 @@ func (r *Router) apply(ctx context.Context, state Saved) error {
 		for _, d := range state.Bundle.Domains {
 			name := strings.ToLower(row["name"])
 			if row["regexp"] != "" || name == d.Name || (d.Suffix && strings.HasSuffix(name, "."+d.Name)) || (row["match-subdomain"] == "true" && strings.HasSuffix(d.Name, "."+name)) {
-				return errors.New("Selected GeoSite overlaps an existing DNS override. Review IP > DNS > Static before applying")
+				return errors.New("Selected Geo domain overlaps an existing DNS override. Review IP > DNS > Static before applying")
 			}
 		}
 	}

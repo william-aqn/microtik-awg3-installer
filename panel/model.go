@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	Version     = "0.2.1"
-	MaxIPs      = 512
-	MaxDomains  = 256
-	MaxDevices  = 24
-	MaxSources  = 12
-	MaxDownload = 48 << 20
-	MaxDNSIPs   = 2048
-	Tag         = "AWG3UI "
+	Version        = "0.2.2"
+	MaxIPs         = 512
+	MaxDomains     = 256
+	MaxDevices     = 24
+	MaxSources     = 12
+	MaxDownload    = 48 << 20
+	MaxDNSIPs      = 2048
+	MaxPolicyBytes = 128 << 10
+	Tag            = "AWG3UI "
 )
 
 type Device struct {
@@ -29,12 +30,15 @@ type Device struct {
 	Mode string `json:"mode"`
 }
 type Policy struct {
-	Default    string   `json:"default"`
-	Devices    []Device `json:"devices"`
-	GeoIP      []string `json:"geoip"`
-	GeoSite    []string `json:"geosite"`
-	Antifilter []string `json:"antifilter"`
-	AutoUpdate bool     `json:"auto_update"`
+	Default       string   `json:"default"`
+	Devices       []Device `json:"devices"`
+	GeoIP         []string `json:"geoip"`
+	GeoSite       []string `json:"geosite"`
+	Antifilter    []string `json:"antifilter"`
+	AutoUpdate    bool     `json:"auto_update"`
+	CustomDomains []string `json:"custom_domains,omitempty"`
+	CustomIPs     []string `json:"custom_ips,omitempty"`
+	CustomURLs    []string `json:"custom_urls,omitempty"`
 }
 type Domain struct {
 	Name   string `json:"name"`
@@ -76,8 +80,20 @@ var antiURLs = map[string]string{
 	"ipresolve":  "https://antifilter.download/list/ipresolve.lst",
 }
 
-func validMode(s string) bool  { return s == "direct" || s == "geo" || s == "vpn" }
-func (p Policy) Clone() Policy { p.Devices = append([]Device(nil), p.Devices...); return p }
+func validMode(s string) bool { return s == "direct" || s == "geo" || s == "vpn" }
+func (p Policy) Clone() Policy {
+	p.Devices = append([]Device(nil), p.Devices...)
+	p.GeoIP = append([]string(nil), p.GeoIP...)
+	p.GeoSite = append([]string(nil), p.GeoSite...)
+	p.Antifilter = append([]string(nil), p.Antifilter...)
+	p.CustomDomains = append([]string(nil), p.CustomDomains...)
+	p.CustomIPs = append([]string(nil), p.CustomIPs...)
+	p.CustomURLs = append([]string(nil), p.CustomURLs...)
+	return p
+}
+func (p Policy) remoteSources() int {
+	return len(p.GeoIP) + len(p.GeoSite) + len(p.Antifilter) + len(p.CustomURLs)
+}
 func (p *Policy) Validate() error {
 	if !validMode(p.Default) {
 		return errors.New("Default mode must be direct, geo or vpn")
@@ -98,15 +114,15 @@ func (p *Policy) Validate() error {
 		}
 		seen[d.MAC] = true
 	}
-	if len(p.GeoIP)+len(p.GeoSite)+len(p.Antifilter) > MaxSources {
+	if p.remoteSources() > MaxSources {
 		return fmt.Errorf("Source limit: %d", MaxSources)
 	}
 	hasGeo := p.Default == "geo"
 	for _, d := range p.Devices {
 		hasGeo = hasGeo || d.Mode == "geo"
 	}
-	if hasGeo && len(p.GeoIP)+len(p.GeoSite)+len(p.Antifilter) == 0 {
-		return errors.New("Choose at least one source before assigning Geo mode")
+	if hasGeo && p.remoteSources()+len(p.CustomDomains)+len(p.CustomIPs) == 0 {
+		return errors.New("Add a source or custom rules before assigning Geo mode")
 	}
 	for _, group := range [][]string{p.GeoIP, p.GeoSite} {
 		for _, s := range group {
@@ -120,7 +136,7 @@ func (p *Policy) Validate() error {
 			return errors.New("Unknown Antifilter list")
 		}
 	}
-	return nil
+	return p.validateCustom()
 }
 func validDomain(s string) bool {
 	if len(s) > 253 || len(s) < 1 || strings.ContainsAny(s, "\r\n\t /:@") {

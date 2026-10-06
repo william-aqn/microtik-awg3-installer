@@ -160,7 +160,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/profiles.js", "/style.css":
+	case "/", "/app.js", "/profiles.js", "/style.css", "/geo.css":
 		sub, _ := fs.Sub(web, "web")
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	default:
@@ -288,7 +288,7 @@ func (a *App) start(w http.ResponseWriter, r *http.Request, kind string) {
 	a.mu.Unlock()
 	if kind == "apply" {
 		p = Policy{}
-		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32768))
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, MaxPolicyBytes))
 		dec.DisallowUnknownFields()
 		if e := dec.Decode(&p); e != nil {
 			apiError(w, 400, "Invalid policy JSON")
@@ -313,8 +313,8 @@ func (a *App) start(w http.ResponseWriter, r *http.Request, kind string) {
 	reply(w, 202, map[string]bool{"accepted": true})
 }
 func sameSources(a, b Policy) bool {
-	x, _ := json.Marshal([][]string{a.GeoIP, a.GeoSite, a.Antifilter})
-	y, _ := json.Marshal([][]string{b.GeoIP, b.GeoSite, b.Antifilter})
+	x, _ := json.Marshal([][]string{a.GeoIP, a.GeoSite, a.Antifilter, a.CustomDomains, a.CustomIPs, a.CustomURLs})
+	y, _ := json.Marshal([][]string{b.GeoIP, b.GeoSite, b.Antifilter, b.CustomDomains, b.CustomIPs, b.CustomURLs})
 	return string(x) == string(y)
 }
 func (a *App) finish(e error) {
@@ -344,6 +344,17 @@ func (a *App) work(kind string, p Policy) {
 		a.finish(err)
 	}()
 	if a.demo {
+		// Validate local custom rules in preview, without fetching remote lists.
+		if kind == "apply" && p.remoteSources() == 0 {
+			var b Bundle
+			b, err = compileSources(context.Background(), p, os.TempDir())
+			if err != nil {
+				return
+			}
+			a.mu.Lock()
+			a.state.Bundle = b
+			a.mu.Unlock()
+		}
 		a.mu.Lock()
 		if kind == "toggle" {
 			a.demoEnabled = !a.demoEnabled
@@ -363,7 +374,7 @@ func (a *App) work(kind string, p Policy) {
 	a.mu.Unlock()
 	b := old.Bundle
 	if kind == "refresh" || old.Revision == "" || !sameSources(old.Policy, p) {
-		if len(p.GeoIP)+len(p.GeoSite)+len(p.Antifilter) > 0 && !a.tunnel.Status(ctx).Connected {
+		if p.remoteSources() > 0 && !a.tunnel.Status(ctx).Connected {
 			err = errors.New("Connect a VPN profile before downloading Geo lists")
 			return
 		}

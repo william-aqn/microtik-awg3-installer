@@ -1,6 +1,7 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let current = null, dirty = false;
+let editRevision = 0, submittingRevision = null;
 let devices = new Map();
 const names = {inherit: 'Default', direct: 'Direct', geo: 'Geo', vpn: 'VPN'};
 async function api(path, body) {
@@ -42,13 +43,17 @@ function drawRows() {
   if (!devices.size) { const tr=document.createElement('tr');const td=document.createElement('td');td.colSpan=3;td.textContent='No DHCP devices found. You can add a MAC address below.';tr.append(td);rows.append(tr); }
   $('device-count').textContent=devices.size+' devices';
 }
-function changed(){dirty=true;message('Unsaved changes');}
+function changed(){dirty=true;editRevision++;message('Unsaved changes');}
 function setPolicy(p, leases){
   $('default').value=p.default; $('geoip').value=(p.geoip||[]).join(', ');$('geosite').value=(p.geosite||[]).join(', ');$('auto-update').checked=!!p.auto_update;
+  $('custom-domains').value=(p.custom_domains||[]).join('\n');
+  $('custom-ips').value=(p.custom_ips||[]).join('\n');
+  $('custom-urls').value=(p.custom_urls||[]).join('\n');
   document.querySelectorAll('#antifilter-options input').forEach(c=>c.checked=(p.antifilter||[]).includes(c.value));renderDevices(leases,p);
 }
 function csv(value){return [...new Set(value.split(',').map(v=>v.trim().toLowerCase()).filter(Boolean))];}
-function collect(){return {default:$('default').value,devices:[...devices.values()].filter(d=>d.mode!=='inherit').map(({mac,name,mode})=>({mac,name,mode})),geoip:csv($('geoip').value),geosite:csv($('geosite').value),antifilter:[...document.querySelectorAll('#antifilter-options input:checked')].map(c=>c.value),auto_update:$('auto-update').checked};}
+function lines(value){return [...new Set(value.split(/\r?\n/).map(v=>v.trim()).filter(v=>v&&!v.startsWith('#')))];}
+function collect(){return {default:$('default').value,devices:[...devices.values()].filter(d=>d.mode!=='inherit').map(({mac,name,mode})=>({mac,name,mode})),geoip:csv($('geoip').value),geosite:csv($('geosite').value),antifilter:[...document.querySelectorAll('#antifilter-options input:checked')].map(c=>c.value),auto_update:$('auto-update').checked,custom_domains:lines($('custom-domains').value),custom_ips:lines($('custom-ips').value),custom_urls:lines($('custom-urls').value)};}
 async function update(){
   try {
     const data = await api('state'); current=data;$('login').hidden=true;$('app').hidden=false;$('preview').hidden=!data.preview;
@@ -61,17 +66,28 @@ async function update(){
     $('updated').textContent=data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
     for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy||!!data.router_error;
     renderProfiles(data);
+    if(submittingRevision!==null&&!data.busy){
+      dirty=!!data.error||editRevision!==submittingRevision;
+      submittingRevision=null;
+      if(data.error)message(data.error+' Your edits are still here.','error');
+    }
     if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.message,data.router_error||data.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
   } catch(e) { if(!$('app').hidden)message(e.message,'error'); }
 }
 async function action(kind){
-  try { if(kind==='refresh'&&dirty)throw new Error('Apply your pending edits before updating lists.');await api(kind,kind==='apply'?collect():{});dirty=false;message('Operation started','busy');await update(); }catch(e){message(e.message,'error');}
+  try {
+    if(kind==='refresh'&&dirty)throw new Error('Apply your pending edits before updating lists.');
+    const revision=editRevision;
+    await api(kind,kind==='apply'?collect():{});
+    if(kind==='apply')submittingRevision=revision;
+    message('Operation started','busy');await update();
+  }catch(e){message(e.message,'error');}
 }
 $('login-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('login',{password:$('password').value});$('password').value='';$('login-error').textContent='';await update();}catch(e){$('login-error').textContent=e.message;}});
 $('save').addEventListener('click',()=>action('apply'));$('refresh').addEventListener('click',()=>action('refresh'));$('toggle').addEventListener('click',()=>action('toggle'));
 $('logout').addEventListener('click',async()=>{await api('logout',{});closeProfile();$('app').hidden=true;$('login').hidden=false;});
-for(const id of ['default','geoip','geosite','auto-update'])$(id).addEventListener('input',changed);
+for(const id of ['default','geoip','geosite','auto-update','custom-domains','custom-ips','custom-urls'])$(id).addEventListener('input',changed);
 document.querySelectorAll('#antifilter-options input').forEach(c=>c.addEventListener('change',changed));
 document.querySelectorAll('.nav').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===button));$('save').hidden=!['devices','lists'].includes(button.dataset.tab);}));
 $('add-device').addEventListener('click',()=>{const mac=$('manual-mac').value.trim().toUpperCase(),name=$('manual-name').value.trim()||'Unnamed device';if(!/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)||devices.has(mac)){message('Enter a unique MAC address','error');return;}devices.set(mac,{mac,name,mode:'inherit',address:'Manual entry'});dirty=true;drawRows();$('manual-mac').value='';$('manual-name').value='';message('Choose a route for the new device, then apply.');});

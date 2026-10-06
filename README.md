@@ -85,6 +85,8 @@ python3 -m venv .venv &&
 
 В **Geo lists** выбери категории IP/доменов и источники, загрузи списки и примени их. Доступны [Loyalsoldier/geoip](https://github.com/Loyalsoldier/geoip), [v2fly/domain-list-community](https://github.com/v2fly/domain-list-community) и [Antifilter](https://antifilter.download/).
 
+В **Your own Geo rules** можно добавить свои домены, IPv4-адреса/подсети и ссылки на текстовые списки — по одной записи на строку. `example.com` включает поддомены, `full:example.com` — только точное имя; подсеть задаётся как `203.0.113.0/24`. Ссылка должна вести прямо на HTTPS-файл ([пример формата](examples/geo-custom.txt)). Нажми **Apply changes**: свои правила объединятся с категориями. **Update lists** и суточное обновление загружают также сохранённые ссылки.
+
 Для загрузки списков VPN должен быть подключён. Для доменных правил устройствам нужен DNS MikroTik. Подробности DNS и лимиты памяти — в [GOTCHAS.md](GOTCHAS.md#dns-и-geo).
 
 ### Проверка состояния
