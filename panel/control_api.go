@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -184,6 +185,7 @@ func (a *App) tunnelAPI(w http.ResponseWriter, r *http.Request, action string) {
 func (a *App) watchTunnel() {
 	tick := time.NewTicker(5 * time.Second)
 	defer tick.Stop()
+	previousError := ""
 	for range tick.C {
 		a.mu.Lock()
 		busy := a.busy
@@ -192,9 +194,19 @@ func (a *App) watchTunnel() {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		e := a.tunnel.ReconcileRoute(ctx)
 		s := a.tunnel.Status(ctx)
 		_ = a.router.LED(ctx, s.Connected)
 		cancel()
+		if e != nil {
+			if e.Error() != previousError {
+				log.Print("AWGC route guard: ", e)
+				a.saveDiagnostic(e)
+			}
+			previousError = e.Error()
+		} else {
+			previousError = ""
+		}
 	}
 }
 func (a *App) diagnostics(ctx context.Context) map[string]any {

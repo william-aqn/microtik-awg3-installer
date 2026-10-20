@@ -33,7 +33,7 @@ def diagnostics(router, output):
         '/routing/rule/print where comment~"^AWG"',
         '/ip/route/print where routing-table=to-awg',
     )
-    parts = ['AWG Control 0.2.3 diagnostics (no configuration contents)']
+    parts = ['AWG Control 0.2.4 diagnostics (no configuration contents)']
     for cmd in commands:
         try:
             parts.append(cmd + '\n' + router.run(cmd))

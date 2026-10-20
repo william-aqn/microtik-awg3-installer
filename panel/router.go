@@ -274,6 +274,7 @@ func (r *Router) diagnostics(ctx context.Context) (map[string]any, error) {
 		{"resource", "system/resource", "version,board-name,free-memory,free-hdd-space,uptime,cpu-load", nil},
 		{"containers", "container", "name,running,stopped,error,memory-current", nil},
 		{"routing", "routing/rule", "comment,disabled,table,src-address,dst-address", nil},
+		{"routes", "ip/route", "comment,routing-table,dst-address,gateway,immediate-gw,distance,disabled,active,blackhole", []string{"routing-table=to-awg"}},
 		{"mangle", "ip/firewall/mangle", ".id,comment,chain,action,jump-target,new-routing-mark,src-mac-address,src-address-list,dst-address-list,dst-address,disabled,packets,bytes", nil},
 		{"ready", "ip/firewall/address-list", "list,address", []string{"list=AWG3UI-ready"}},
 	}
@@ -286,7 +287,7 @@ func (r *Router) diagnostics(ctx context.Context) (map[string]any, error) {
 		if c.name == "mangle" || c.name == "routing" {
 			kept := []Row{}
 			for _, row := range rows {
-				if strings.HasPrefix(row["comment"], "AWG3") {
+				if strings.HasPrefix(row["comment"], "AWG3") || strings.HasPrefix(row["comment"], "AWGC ") {
 					kept = append(kept, row)
 				}
 			}

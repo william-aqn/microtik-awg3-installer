@@ -58,7 +58,7 @@ async function update(){
   try {
     const data = await api('state'); current=data;$('login').hidden=true;$('app').hidden=false;$('preview').hidden=!data.preview;
     const tunnel=data.tunnel||{};
-    $('version').textContent='v'+data.version;$('vpn-state').textContent=tunnel.connected?'Connected':tunnel.enabled?(data.busy?'Connecting':'No connection'):'Disconnected';$('vpn-dot').className='status-dot'+(tunnel.connected?' on':'');
+    $('version').textContent='v'+data.version;$('vpn-state').textContent=tunnel.connected?'Connected':tunnel.phase==='routing_error'?'Route unavailable':tunnel.enabled?(data.busy?'Connecting':'No connection'):'Disconnected';$('vpn-dot').className='status-dot'+(tunnel.connected?' on':'');
     $('toggle').textContent=tunnel.connected?'Disconnect':'Connect';
     $('vpn-detail').textContent=tunnel.active_name||'Panel stays available when VPN is off.';
     const router=data.router?.[0];$('memory').textContent=router?(Number(router['free-memory'])/1048576).toFixed(1)+' MiB free':'Unavailable';$('router-name').textContent=router?router['board-name']+' / RouterOS '+router.version:'Router connection unavailable';
@@ -71,7 +71,7 @@ async function update(){
       submittingRevision=null;
       if(data.error)message(data.error+' Your edits are still here.','error');
     }
-    if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.message,data.router_error||data.error?'error':data.busy?'busy':'');}
+    if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||tunnel.error||data.message,data.router_error||data.error||tunnel.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
   } catch(e) { if(!$('app').hidden)message(e.message,'error'); }
 }

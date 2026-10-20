@@ -7,6 +7,7 @@ function renderProfiles(data) {
   const age=ts.handshake?Math.max(0,Math.floor(Date.now()/1000-ts.handshake)):null;
   const bytes=n=>((n||0)/1048576).toFixed(2)+' MiB';
   $('connection-detail').textContent=ts.active_id?(ts.connected?'Connected':'Connection '+(ts.phase||'off'))+' / Last handshake: '+(age===null?'none':age+'s ago')+' / Received '+bytes(ts.rx_bytes)+' / Sent '+bytes(ts.tx_bytes):'Import a native AmneziaWG .conf to get started.';
+  if(ts.route?.last_repair)$('connection-detail').textContent+=' / Route restored automatically '+new Date(ts.route.last_repair*1000).toLocaleTimeString();
   for (const p of data.profiles||[]) {
     const active=p.id===ts.active_id,card=document.createElement('article');card.className='profile-card'+(active?' selected':'');
     const tag=document.createElement('span');tag.className='pill';tag.textContent=active?'Selected profile':'Saved profile';

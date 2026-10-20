@@ -14,6 +14,7 @@ import (
 
 type TunnelRouting interface {
 	Configure(context.Context, VPNConfig, string) error
+	EnsureRoute(context.Context) (bool, error)
 	Gate(context.Context, bool) error
 	LED(context.Context, bool) error
 }
@@ -24,15 +25,16 @@ type TunnelSaved struct {
 }
 type TunnelStatus struct {
 	TunnelStats
-	Enabled        bool   `json:"enabled"`
-	Connected      bool   `json:"connected"`
-	ActiveID       string `json:"active_id"`
-	ActiveName     string `json:"active_name"`
-	ActiveRevision string `json:"active_revision"`
-	PreviousName   string `json:"previous_name"`
-	CanRollback    bool   `json:"can_rollback"`
-	Phase          string `json:"phase"`
-	Error          string `json:"error,omitempty"`
+	Enabled        bool        `json:"enabled"`
+	Connected      bool        `json:"connected"`
+	ActiveID       string      `json:"active_id"`
+	ActiveName     string      `json:"active_name"`
+	ActiveRevision string      `json:"active_revision"`
+	PreviousName   string      `json:"previous_name"`
+	CanRollback    bool        `json:"can_rollback"`
+	Phase          string      `json:"phase"`
+	Error          string      `json:"error,omitempty"`
+	Route          RouteHealth `json:"route"`
 }
 type Tunnel struct {
 	mu               sync.Mutex
@@ -45,6 +47,7 @@ type Tunnel struct {
 	resolve          func(context.Context, string) (string, error)
 	verifyTimeout    time.Duration
 	endpoints        map[string]string
+	route            RouteHealth
 }
 
 func resolveEndpoint(ctx context.Context, host string) (string, error) {
@@ -113,11 +116,24 @@ func (t *Tunnel) Status(ctx context.Context) TunnelStatus {
 	t.mu.Lock()
 	s := t.saved
 	out := TunnelStatus{Enabled: s.Enabled, ActiveID: s.Active.ID, ActiveName: s.Active.Name, ActiveRevision: s.Active.Revision, PreviousName: s.Previous.Name, CanRollback: s.Previous.ID != "", Phase: t.phase, Error: t.lastError}
+	out.Route = t.route
 	t.mu.Unlock()
 	stats, e := t.driver.Stats(ctx)
 	out.TunnelStats = stats
 	c, _ := parseVPNConfig(s.Active.Config)
 	out.Connected = e == nil && s.Enabled && stats.Running && stats.Handshake > 0 && time.Since(time.Unix(stats.Handshake, 0)) < c.HandshakeWindow()
+	routeAge := time.Since(time.Unix(out.Route.CheckedAt, 0))
+	if s.Enabled && (!out.Route.Ready || routeAge < 0 || routeAge > routeCheckMaxAge) {
+		out.Connected = false
+		if out.Phase == "connected" {
+			out.Phase = "routing_error"
+		}
+		if out.Route.Error != "" {
+			out.Error = out.Route.Error
+		} else if out.Phase == "routing_error" {
+			out.Error = "VPN route check is overdue; inspect router API access"
+		}
+	}
 	if out.Phase == "connected" && !out.Connected {
 		out.Phase = "disconnected"
 	}
@@ -133,6 +149,9 @@ func (t *Tunnel) rememberError(e error) {
 	t.mu.Unlock()
 }
 func (t *Tunnel) bringUp(ctx context.Context, p Profile) error {
+	if e := t.ensureRoute(ctx); e != nil {
+		return e
+	}
 	if e := t.driver.Initialize(ctx); e != nil {
 		return e
 	}
@@ -189,7 +208,7 @@ func (t *Tunnel) bringUp(ctx context.Context, p Profile) error {
 		probeErr := t.driver.Probe(verify)
 		stats, statErr := t.driver.Stats(verify)
 		if probeErr == nil && statErr == nil && stats.Handshake > 0 && stats.RX > 0 {
-			return nil
+			return t.ensureRoute(ctx)
 		}
 		select {
 		case <-verify.Done():

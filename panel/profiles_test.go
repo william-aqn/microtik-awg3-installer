@@ -109,9 +109,19 @@ func (d *fakeTunnelDriver) Probe(context.Context) error {
 }
 
 type fakeTunnelRouting struct {
-	enabled   bool
-	led       bool
-	endpoints []string
+	enabled      bool
+	led          bool
+	endpoints    []string
+	routeChecks  int
+	routeRepairs bool
+	routeError   error
+}
+
+func (r *fakeTunnelRouting) EnsureRoute(context.Context) (bool, error) {
+	r.routeChecks++
+	repaired := r.routeRepairs
+	r.routeRepairs = false
+	return repaired, r.routeError
 }
 
 func (r *fakeTunnelRouting) Configure(_ context.Context, c VPNConfig, ip string) error {
