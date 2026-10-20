@@ -146,6 +146,57 @@ class PanelPrepareTests(unittest.TestCase):
         self.assertLess(setup.index('Existing Mode binding'), setup.index('/system/backup/save'))
         self.assertIn('name="www" and dynamic=no', setup)
 
+    def test_ntp_is_ready_before_network_cutover_or_container_start(self):
+        prior = {'router_user': 'awg-panel', 'router_password': 'a' * 48, 'password_salt': 'b' * 32, 'password_hash': 'c' * 64}
+        for migration in (False, True):
+            with self.subTest(migration=migration):
+                _, setup, _ = prepare.build_bundle(
+                    '192.168.3.0/24', 'bridge', 'usb1-part1', None, None,
+                    'a sufficiently long test password', migration=migration, prior_settings=prior)
+                sync = setup.index('NTP did not synchronize')
+                self.assertIn(':for attempt from=1 to=120', setup[:sync])
+                self.assertLess(setup.index('/system/backup/save'), setup.index('name=awg-control-restore-ntp'))
+                self.assertLess(setup.index('name=awg-control-restore-ntp'), setup.index('/system/ntp/client/set enabled=yes'))
+                for mutation in ('/ip/firewall/mangle/disable', '/container/stop', '/interface/veth/add', '/container/start $c'):
+                    if mutation in setup:
+                        self.assertLess(sync, setup.index(mutation))
+                self.assertNotIn('time.cloudflare.com', setup)
+                self.assertNotIn('/system/clock/set', setup)
+
+    def test_ntp_keeps_existing_peers_and_rollback_only_removes_owned_peers(self):
+        import ipaddress
+        import re
+        _, setup, rollback = prepare.build_bundle(
+            '192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
+        peers = [line for line in setup.splitlines() if '/system/ntp/client/servers/add ' in line]
+        self.assertEqual(len(peers), 2)
+        for line in peers:
+            address = re.search(r'/servers/add address=(\S+)', line).group(1)
+            self.assertEqual(ipaddress.ip_address(address).version, 4)
+            self.assertIn(f'/servers/find where address="{address}"]]', line)
+            self.assertIn('= 0) do={', line)
+            self.assertIn('iburst=yes auth-key=none comment="AWGC bootstrap NTP"', line)
+        self.assertNotIn('/system/ntp/client/set servers=', setup)
+        self.assertNotIn('/system/ntp/client/servers/set', setup)
+        self.assertNotIn('/system/ntp/client/servers/remove [find]', setup + rollback)
+        self.assertIn(r'/servers/remove [find where comment=\"AWGC bootstrap NTP\"]', setup)
+        self.assertIn('[:tostr $oldNTPEnabled]', setup)
+        self.assertIn('/system/script/run awg-control-restore-ntp', rollback)
+        self.assertLess(rollback.index('/routing/rule/remove'), rollback.index('/system/script/run awg-control-restore-ntp'))
+        # NTP can time out before the DNS snapshot has been created.
+        self.assertIn('[:len [/system/script/find where name="awg-control-restore-dns"]] = 1', rollback)
+
+    def test_ntp_custom_policy_and_stale_snapshot_are_rejected_before_mutations(self):
+        _, setup, _ = prepare.build_bundle(
+            '192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
+        before_backup = setup.split('/system/backup/save', 1)[0]
+        for check in ('NTP setup from a previous attempt exists', 'NTP needs unicast in main', 'Authenticated NTP configured'):
+            self.assertIn(check, before_backup)
+        for mutation in ('/servers/add', '/system/ntp/client/set ', '/system/script/add'):
+            self.assertNotIn(mutation, before_backup)
+        buttons = prepare._DEPLOY.button_setup('192.168.3.0/24')
+        self.assertNotIn('/system/ntp/', buttons)
+
 
 if __name__ == '__main__':
     unittest.main()

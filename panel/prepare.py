@@ -52,6 +52,7 @@ def main():
     write_private(args.output / 'setup.rsc', setup)
     write_private(args.output / 'rollback.rsc', rollback)
     print('Private bundle prepared. Keep this directory out of Git.')
+    print('Setup adds DNS-independent NTP peers and waits for time synchronization; rollback restores the prior NTP state.')
     print('Upload settings.json to USB/awg-control-data. Upload image and scripts to USB.')
     if prior:
         print('Also migrate state.json and import the native VPN profile before cutover; see README.')

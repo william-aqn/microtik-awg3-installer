@@ -23,6 +23,8 @@ SPEC.loader.exec_module(legacy)
 def diagnostics(router, output):
     commands = (
         '/system/resource/print', '/container/print', '/disk/print',
+        '/system/clock/print', '/system/ntp/client/print',
+        '/system/ntp/client/servers/print detail',
         '/system/routerboard/mode-button/print',
         '/system/routerboard/reset-button/print',
         '/system/leds/print detail where leds="user-led"',
@@ -143,6 +145,7 @@ def main():
             subprocess.run([sys.executable, str(ROOT / 'panel/build.py'), '--output', str(image.resolve())], check=True)
         image_checksum(image)
         print('Prepared one container, LAN-only panel, Mode and USR integration. Private rollback bundle: ' + str(output))
+        print('NTP: keep existing peers, add Cloudflare IPv4 servers, enable the client and wait for synchronization before starting AWG.')
         legacy.confirm('Apply the prepared installation? VPN traffic will pause during migration.')
         router.run('/file/add name=' + legacy.ros_quote(disk + '/awg-control-data') + ' type=directory')
         for name in data:
@@ -150,7 +153,8 @@ def main():
         router.upload(image, disk + '/awg-control.tar')
         router.upload(output / 'setup.rsc', disk + '/awg-control-setup.rsc')
         router.upload(output / 'rollback.rsc', disk + '/awg-control-rollback.rsc')
-        router.run('/import file-name=' + disk + '/awg-control-setup.rsc', timeout=240)
+        # Includes the bounded NTP wait, legacy stop and image extraction.
+        router.run('/import file-name=' + disk + '/awg-control-setup.rsc', timeout=360)
         diagnostics(router, output)
         print('Open your LAN gateway on port 8088. Fresh installation: import a profile and select Connect.')
         print('If migration did not connect, inspect Diagnostics and use --rollback with this private run directory.')

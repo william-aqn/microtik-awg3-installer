@@ -5,8 +5,46 @@ import re
 import secrets
 
 
+NTP_SERVERS = ('162.159.200.1', '162.159.200.123')
+NTP_COMMENT = 'AWGC bootstrap NTP'
+NTP_RESTORE_SCRIPT = 'awg-control-restore-ntp'
+NTP_SYNC_TIMEOUT = 120
+
+
 def quote(value):
     return '"' + str(value).replace('\\', '\\\\').replace('"', '\\"').replace('$', '\\$') + '"'
+
+
+def ntp_preflight():
+    # Do not silently replace another VRF, broadcast source, or authenticated
+    # time policy with public unauthenticated servers.
+    return [
+        f':if ([:len [/system/script/find where name={quote(NTP_RESTORE_SCRIPT)}]] > 0 || [:len [/system/ntp/client/servers/find where comment={quote(NTP_COMMENT)}]] > 0) do={{ :error "NTP setup from a previous attempt exists; inspect rollback before retrying" }}',
+        ':if ([/system/ntp/client/get mode] != "unicast" || [/system/ntp/client/get vrf] != "main") do={ :error "NTP needs unicast in main; custom time routing requires manual integration" }',
+        ':if ([:len [/system/ntp/client/servers/find where auth-key!=none]] > 0) do={ :error "Authenticated NTP configured; integrate DNS-independent time without replacing its authentication" }',
+    ]
+
+
+def ntp_setup():
+    # Save only the global flag we change. Existing peers and their per-server
+    # settings stay untouched; rollback removes only peers bearing our marker.
+    restore = f'/system/ntp/client/servers/remove [find where comment={quote(NTP_COMMENT)}]; /system/ntp/client/set enabled='
+    commands = [
+        f':local oldNTPEnabled [/system/ntp/client/get enabled]; /system/script/add name={NTP_RESTORE_SCRIPT} policy=read,write source=({quote(restore)} . [:tostr $oldNTPEnabled])',
+    ]
+    for address in NTP_SERVERS:
+        commands.append(f':if ([:len [/system/ntp/client/servers/find where address={quote(address)}]] = 0) do={{ /system/ntp/client/servers/add address={address} iburst=yes auth-key=none comment={quote(NTP_COMMENT)} }}')
+    commands += [
+        '/system/ntp/client/set enabled=yes',
+        f':put "Waiting for NTP synchronization through WAN (up to {NTP_SYNC_TIMEOUT} seconds)..."',
+        f':for attempt from=1 to={NTP_SYNC_TIMEOUT} do={{ :if ([/system/ntp/client/get status] != "synchronized") do={{ :delay 1s }} }}',
+        ':if ([/system/ntp/client/get status] != "synchronized") do={ :error "NTP did not synchronize; check WAN and outbound UDP 123. Container was not started. See GOTCHAS.md and diagnostics." }',
+    ]
+    return commands
+
+
+def ntp_rollback():
+    return f':if ([:len [/system/script/find where name={quote(NTP_RESTORE_SCRIPT)}]] = 1) do={{ /system/script/run {NTP_RESTORE_SCRIPT}; /system/script/remove [find where name={quote(NTP_RESTORE_SCRIPT)}] }}'
 
 
 def mode_script(lan):
@@ -152,6 +190,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
         f':if ([:len [/file/find where name={quote(disk + "/awg-control.tar")}]] != 1 || [:len [/file/find where name={quote(disk + "/awg-control-data/settings.json")}]] != 1) do={{ :error "Upload image and private data to USB first" }}',
         ':if ([/ip/service/get [/ip/service/find where name="www" and dynamic=no] disabled] = true || [/ip/service/get [/ip/service/find where name="www" and dynamic=no] port] != 80) do={ :error "Enable local www port 80 and permit 172.18.20.2/32 before import" }',
     ]
+    setup += ntp_preflight()
     if migration:
         setup += [
             ':if ([:len [/container/find where name="awg3"]] != 1 || [:len [/container/find where name="awg-panel"]] != 1 || [:len [/user/find where name="awg-panel"]] != 1) do={ :error "Expected the two-container 0.1.1 installation" }',
@@ -185,7 +224,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     checks = [line for line in setup if line.startswith(':if ') and 'do={ :error' in line]
     actions = [line for line in setup if line not in checks]
     dns_snapshot = r':local oldDNS [/ip/dns/get servers]; :local oldRemote [/ip/dns/get allow-remote-requests]; /system/script/add name=awg-control-restore-dns policy=read,write source=("/ip/dns/set servers=\"" . [:tostr $oldDNS] . "\" allow-remote-requests=" . $oldRemote)'
-    setup = checks + [f'/system/backup/save name={quote(disk + "/before-awg-control")}', dns_snapshot] + actions
+    setup = checks + [f'/system/backup/save name={quote(disk + "/before-awg-control")}'] + ntp_setup() + [dns_snapshot] + actions
     setup += [
         '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth action=drop comment="AWGC input guard" place-before=0',
         # The router's own DNS requests return through the tunnel with the
@@ -268,5 +307,10 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
             '/user/remove [find where name="awg-control"]',
             '/user/group/remove [find where name="awg-control"]',
         ]
-    rollback += ['/system/script/run awg-control-restore-dns', '/system/script/remove [find where name="awg-control-restore-dns"]', '/ip/dns/cache/flush', ':put "Rollback completed. Private USB files retained."']
+    rollback += [
+        ':if ([:len [/system/script/find where name="awg-control-restore-dns"]] = 1) do={ /system/script/run awg-control-restore-dns; /system/script/remove [find where name="awg-control-restore-dns"] }',
+        ntp_rollback(),
+        '/ip/dns/cache/flush',
+        ':put "Rollback completed. Private USB files retained."',
+    ]
     return settings, '\n'.join(setup) + '\n', '\n'.join(rollback) + '\n'
