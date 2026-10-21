@@ -41,6 +41,7 @@ type App struct {
 	busy            bool
 	message         string
 	lastError       string
+	geoError        string
 	demo            bool
 	demoEnabled     bool
 	demoProfile     Profile
@@ -241,7 +242,8 @@ func (a *App) login(w http.ResponseWriter, r *http.Request) {
 }
 func (a *App) status(w http.ResponseWriter, r *http.Request) {
 	a.mu.Lock()
-	out := map[string]any{"version": Version, "preview": a.demo, "policy": a.state.Policy, "bundle": a.state.Bundle, "revision": a.state.Revision, "busy": a.busy, "message": a.message, "error": a.lastError, "limits": map[string]int{"ips": MaxIPs, "domains": MaxDomains, "devices": MaxDevices}}
+	bundle := map[string]any{"ip_count": len(a.state.Bundle.IPs), "domain_count": len(a.state.Bundle.Domains), "ipv6_skipped": a.state.Bundle.IPv6Skipped, "downloaded": a.state.Bundle.Downloaded}
+	out := map[string]any{"version": Version, "preview": a.demo, "policy": a.state.Policy, "bundle": bundle, "revision": a.state.Revision, "busy": a.busy, "message": a.message, "error": a.lastError, "geo_error": a.geoError, "limits": map[string]int{"ips": MaxIPs, "domains": MaxDomains, "devices": MaxDevices, "sources": MaxSources, "regex": MaxRegex, "dns_ips": MaxDNSIPs}}
 	a.mu.Unlock()
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
@@ -268,6 +270,9 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		out["vpn_enabled"] = ts.Enabled
 		out["container_running"] = true
 	}
+	if a.router.geo != nil {
+		out["dns"] = a.router.geo.status()
+	}
 	resources, e := a.router.rows(ctx, "system/resource", "board-name,version,free-memory,free-hdd-space,cpu-load")
 	if e != nil {
 		out["router_error"] = e.Error()
@@ -280,8 +285,8 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		out["router_error"] = e.Error()
 	}
 	out["leases"] = leases
-	ready, e := a.router.rows(ctx, "ip/firewall/address-list", "address", "list=AWG3UI-ready")
-	out["geo_ready"] = e == nil && len(ready) == 1
+	// Do not scan the large firewall table on every UI refresh. Readiness is
+	// verified when committing a policy and is available in explicit diagnostics.
 	reply(w, 200, out)
 }
 func (a *App) start(w http.ResponseWriter, r *http.Request, kind string) {
@@ -339,6 +344,21 @@ func (a *App) finish(e error) {
 	} else {
 		a.message = "Settings applied"
 	}
+}
+func (a *App) progress(message string) {
+	a.mu.Lock()
+	a.message = message
+	a.mu.Unlock()
+}
+func (a *App) applyPolicy(ctx context.Context, state Saved) error {
+	err := a.router.apply(ctx, state, a.progress)
+	a.mu.Lock()
+	a.geoError = ""
+	if err != nil {
+		a.geoError = "Geo list update failed: " + err.Error()
+	}
+	a.mu.Unlock()
+	return err
 }
 func (a *App) work(kind string, p Policy) {
 	var err error
@@ -401,7 +421,7 @@ func (a *App) work(kind string, p Policy) {
 	a.mu.Lock()
 	a.message = "Applying policy; Geo devices temporarily use VPN"
 	a.mu.Unlock()
-	if err = a.router.apply(ctx, state); err != nil {
+	if err = a.applyPolicy(ctx, state); err != nil {
 		return
 	}
 	if err = writeJSON(filepath.Join(a.s.DataDir, "state.json"), state); err != nil {
@@ -416,7 +436,7 @@ func (a *App) maintenance() {
 	// Always reconcile volatile lists after startup. If a previous commit reached
 	// the router but the process died before saving, recover its pending snapshot.
 	time.Sleep(5 * time.Second)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	var pending Saved
 	if readJSON(filepath.Join(a.s.DataDir, "pending.json"), &pending) == nil && pending.Policy.Validate() == nil && pending.Bundle.Validate() == nil {
 		rows, e := a.router.rows(ctx, "ip/firewall/mangle", "comment,jump-target")
@@ -438,7 +458,7 @@ func (a *App) maintenance() {
 		state.Revision = randomID()[:16]
 	}
 	if state.Revision != "" {
-		e := a.router.apply(ctx, state)
+		e := a.applyPolicy(ctx, state)
 		if e == nil {
 			e = writeJSON(filepath.Join(a.s.DataDir, "state.json"), state)
 		}
@@ -446,7 +466,11 @@ func (a *App) maintenance() {
 			a.mu.Lock()
 			a.state = state
 			a.mu.Unlock()
-			e = a.tunnel.Restore(ctx)
+			cancel()
+			a.progress("Restoring VPN connection")
+			restore, stop := context.WithTimeout(context.Background(), 130*time.Second)
+			e = a.tunnel.Restore(restore)
+			stop()
 		}
 		if e != nil {
 			a.saveDiagnostic(e)
@@ -468,28 +492,8 @@ func (a *App) maintenance() {
 		if busy {
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		rows, e := a.router.rows(ctx, "ip/firewall/address-list", ".id,list", "list=AWG3UI-dns-a", "list=AWG3UI-dns-b", "#|")
-		if e == nil && len(rows) > MaxDNSIPs {
-			a.mu.Lock()
-			if a.busy {
-				a.mu.Unlock()
-				cancel()
-				continue
-			}
-			a.busy = true
-			a.mu.Unlock()
-			source := `:if ([:len [/system/script/job/find where script="awg-ui-apply"]] > 0) do={ :error "Apply in progress" }; /ip/firewall/address-list/remove [find where list="AWG3UI-ready"]; /ip/dns/static/disable [find where comment~"^AWG3UI dns-"]; /ip/firewall/address-list/remove [find where list="AWG3UI-dns-a" or list="AWG3UI-dns-b"];`
-			e = a.router.script(ctx, "awg-ui-guard", source)
-			a.mu.Lock()
-			a.busy = false
-			a.lastError = "DNS address limit exceeded. Geo now uses VPN for all internet. Choose fewer domains and apply again."
-			a.mu.Unlock()
-			if e != nil {
-				log.Print(e)
-			}
-		}
-		cancel()
+		// DNS learning is bounded before answering a query. There is no periodic
+		// scan of the large RouterOS table and no persistent DNS rule generation.
 		stamp, e := time.Parse(time.RFC3339, last)
 		if p.AutoUpdate && (e != nil || time.Since(stamp) > 24*time.Hour) && time.Since(a.lastAutoAttempt) > time.Hour {
 			a.mu.Lock()
@@ -598,6 +602,20 @@ func run() error {
 			d := a.diagnostics(context.Background())
 			return json.NewEncoder(os.Stdout).Encode(d)
 		}
+		if e := a.router.geo.setDomains(a.state.Bundle.Domains); e != nil {
+			return e
+		}
+		if e := a.router.geo.loadAliases(); e != nil {
+			return e
+		}
+		if active := a.tunnel.snapshot().Active; active.ID != "" {
+			profile, _ := parseVPNConfig(active.Config)
+			a.router.geo.setUpstreams(profile.DNS)
+		}
+		if e := a.router.geo.start(geoDNSListen); e != nil {
+			return e
+		}
+		defer a.router.geo.close()
 		a.busy = true
 		if e := a.listenControl(); e != nil {
 			return e

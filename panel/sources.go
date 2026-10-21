@@ -208,8 +208,14 @@ func pbDomain(f io.ReadSeeker, end int64) (Domain, error) {
 			return d, e
 		}
 	}
+	if typ == 1 {
+		var e error
+		d.Name, e = geoRegexp(d.Name)
+		d.Regexp = true
+		return d, e
+	}
 	if typ != 2 && typ != 3 {
-		return d, errors.New("Selected GeoSite category contains regexp/keyword rules unsupported by RouterOS DNS; category was rejected in full")
+		return d, errors.New("Selected GeoSite category contains unsupported keyword rules; category was rejected in full")
 	}
 	d.Name = strings.ToLower(d.Name)
 	d.Suffix = typ == 2
@@ -232,6 +238,7 @@ func readGeoSite(f io.ReadSeeker, selected []string) ([]Domain, error) {
 	wanted := map[string]bool{}
 	found := map[string]bool{}
 	domains := map[Domain]bool{}
+	regexCount := 0
 	for _, s := range selected {
 		wanted[strings.ToUpper(s)] = true
 	}
@@ -281,7 +288,13 @@ func readGeoSite(f io.ReadSeeker, selected []string) ([]Domain, error) {
 						if de != nil {
 							return nil, de
 						}
+						if d.Regexp && !domains[d] {
+							regexCount++
+						}
 						domains[d] = true
+						if regexCount > MaxRegex {
+							return nil, fmt.Errorf("GeoSite exceeds %d regular expressions; nothing was truncated", MaxRegex)
+						}
 						if len(domains) > MaxDomains {
 							return nil, fmt.Errorf("GeoSite exceeds %d domains; nothing was truncated", MaxDomains)
 						}

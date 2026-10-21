@@ -33,7 +33,7 @@ def diagnostics(router, output):
         '/routing/rule/print where comment~"^AWG"',
         '/ip/route/print where routing-table=to-awg',
     )
-    parts = ['AWG Control 0.2.4 diagnostics (no configuration contents)']
+    parts = ['AWG Control 0.2.5 diagnostics (no configuration contents)']
     for cmd in commands:
         try:
             parts.append(cmd + '\n' + router.run(cmd))
@@ -111,7 +111,7 @@ def main():
         disk = args.disk or legacy.ask('Ext4 USB partition', 'usb1-part1')
         legacy.name(disk)
         if not args.migrate:
-            legacy.preflight(router, legacy.Settings(lan, bridge, args.wan, disk, True, True).validate())
+            legacy.preflight(router, legacy.Settings(lan, bridge, args.wan, disk, True, True).validate(), tested_ros='7.23.8')
         if router.get('/disk', 'fs', 'slot=' + legacy.ros_quote(disk)) != 'ext4':
             raise ValueError('Prepare and back up the ext4 USB partition first. This installer never formats disks.')
         if router.count('/file', 'name=' + legacy.ros_quote(disk + '/awg-control-data')):

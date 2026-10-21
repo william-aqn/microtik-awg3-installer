@@ -145,6 +145,18 @@ class PanelPrepareTests(unittest.TestCase):
         _, setup, _ = prepare.build_bundle('192.168.3.0/24', 'bridge', 'usb1-part1', None, None, 'a sufficiently long test password')
         self.assertLess(setup.index('Existing Mode binding'), setup.index('/system/backup/save'))
         self.assertIn('name="www" and dynamic=no', setup)
+        self.assertLess(setup.index('Geo DNS requires no DoH or dynamic DNS fallback'), setup.index('/system/backup/save'))
+        self.assertIn('version] != "7.23.8 (long-term)"', setup)
+        self.assertLess(setup.index('flash-store fix'), setup.index('/system/backup/save'))
+
+    def test_full_stop_restores_dns_without_a_running_container(self):
+        stop = prepare._DEPLOY.stop_script('192.168.3.0/24')
+        restore = stop.index('/system/script/run awg-control-direct-dns')
+        self.assertLess(stop.index('/container/stop $c'), restore)
+        self.assertLess(stop.index('/routing/rule/disable'), restore)
+        self.assertLess(restore, stop.index('/ip/dns/cache/flush'))
+        self.assertNotIn('/container/shell', stop)
+        self.assertIn('/system/script/run awg-control-restore-dns', stop)
 
     def test_ntp_is_ready_before_network_cutover_or_container_start(self):
         prior = {'router_user': 'awg-panel', 'router_password': 'a' * 48, 'password_salt': 'b' * 32, 'password_hash': 'c' * 64}

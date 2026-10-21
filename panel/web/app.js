@@ -53,17 +53,23 @@ function setPolicy(p, leases){
 }
 function csv(value){return [...new Set(value.split(',').map(v=>v.trim().toLowerCase()).filter(Boolean))];}
 function lines(value){return [...new Set(value.split(/\r?\n/).map(v=>v.trim()).filter(v=>v&&!v.startsWith('#')))];}
+function updatingLists(data){return !!data.busy && /^(Applying|Downloading|Restoring USB)/.test(data.message||'');}
+let updateRunning=false;
 function collect(){return {default:$('default').value,devices:[...devices.values()].filter(d=>d.mode!=='inherit').map(({mac,name,mode})=>({mac,name,mode})),geoip:csv($('geoip').value),geosite:csv($('geosite').value),antifilter:[...document.querySelectorAll('#antifilter-options input:checked')].map(c=>c.value),auto_update:$('auto-update').checked,custom_domains:lines($('custom-domains').value),custom_ips:lines($('custom-ips').value),custom_urls:lines($('custom-urls').value)};}
 async function update(){
+  if(updateRunning)return;
+  updateRunning=true;
   try {
     const data = await api('state'); current=data;$('login').hidden=true;$('app').hidden=false;$('preview').hidden=!data.preview;
     const tunnel=data.tunnel||{};
-    $('version').textContent='v'+data.version;$('vpn-state').textContent=tunnel.connected?'Connected':tunnel.phase==='routing_error'?'Route unavailable':tunnel.enabled?(data.busy?'Connecting':'No connection'):'Disconnected';$('vpn-dot').className='status-dot'+(tunnel.connected?' on':'');
+    $('version').textContent='v'+data.version;$('vpn-state').textContent=updatingLists(data)?'Updating lists':tunnel.connected?'Connected':tunnel.phase==='routing_error'?'Route unavailable':tunnel.enabled?(data.busy?'Connecting':'No connection'):'Disconnected';$('vpn-dot').className='status-dot'+(tunnel.connected?' on':'');
     $('toggle').textContent=tunnel.connected?'Disconnect':'Connect';
     $('vpn-detail').textContent=tunnel.active_name||'Panel stays available when VPN is off.';
     const router=data.router?.[0];$('memory').textContent=router?(Number(router['free-memory'])/1048576).toFixed(1)+' MiB free':'Unavailable';$('router-name').textContent=router?router['board-name']+' / RouterOS '+router.version:'Router connection unavailable';
-    $('ip-count').textContent=data.bundle.ips?.length||0;$('domain-count').textContent=data.bundle.domains?.length||0;
-    $('updated').textContent=data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
+    $('ip-count').textContent=data.bundle.ip_count??data.bundle.ips?.length??0;$('domain-count').textContent=data.bundle.domain_count??data.bundle.domains?.length??0;
+	const limits=data.limits||{};
+	$('list-budget').textContent=`Up to ${limits.ips} IPv4 prefixes / ${limits.domains} domain rules (${limits.regex} regular expressions) / ${limits.sources} categories or URLs / ${limits.devices} devices.`;
+    $('updated').textContent=data.geo_error?'Saved snapshot; Geo rules need attention':data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
     for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy||!!data.router_error;
     renderProfiles(data);
     if(submittingRevision!==null&&!data.busy){
@@ -71,9 +77,10 @@ async function update(){
       submittingRevision=null;
       if(data.error)message(data.error+' Your edits are still here.','error');
     }
-    if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||tunnel.error||data.message,data.router_error||data.error||tunnel.error?'error':data.busy?'busy':'');}
+    if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.geo_error||data.dns?.error||tunnel.error||data.message,data.router_error||data.error||data.geo_error||data.dns?.error||tunnel.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
   } catch(e) { if(!$('app').hidden)message(e.message,'error'); }
+  finally {updateRunning=false;}
 }
 async function action(kind){
   try {
@@ -92,4 +99,4 @@ document.querySelectorAll('#antifilter-options input').forEach(c=>c.addEventList
 document.querySelectorAll('.nav').forEach(button=>button.addEventListener('click',()=>{document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.id!==button.dataset.tab);document.querySelectorAll('.nav').forEach(n=>n.classList.toggle('active',n===button));$('save').hidden=!['devices','lists'].includes(button.dataset.tab);}));
 $('add-device').addEventListener('click',()=>{const mac=$('manual-mac').value.trim().toUpperCase(),name=$('manual-name').value.trim()||'Unnamed device';if(!/^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/.test(mac)||devices.has(mac)){message('Enter a unique MAC address','error');return;}devices.set(mac,{mac,name,mode:'inherit',address:'Manual entry'});dirty=true;drawRows();$('manual-mac').value='';$('manual-name').value='';message('Choose a route for the new device, then apply.');});
 $('load-diag').addEventListener('click',async()=>{try{$('diag-output').textContent='Collecting...';$('diag-output').textContent=JSON.stringify(await api('diagnostics'),null,2);}catch(e){$('diag-output').textContent=e.message;}});
-initProfiles();initPasswordForm();update();setInterval(()=>{if(!document.hidden)update();},5000);
+initProfiles();initPasswordForm();update();setInterval(()=>{if(!document.hidden&&!$('app').hidden)update();},5000);

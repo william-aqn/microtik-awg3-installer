@@ -48,6 +48,25 @@ class InstallerTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
+    def test_unified_preflight_version_override_remains_strict(self):
+        class RouterProbe:
+            def __init__(self, version):
+                self.version = version
+
+            def get(self, menu, field):
+                return {'version': self.version, 'architecture-name': 'arm',
+                        'board-name': 'hAP ac^2'}[field]
+
+            def count(self, menu, where):
+                return 0
+
+        with self.assertRaisesRegex(awg.InstallError, 'matching container package'):
+            awg.preflight(RouterProbe('7.23.8 (long-term)'), self.settings, tested_ros='7.23.8')
+        with self.assertRaisesRegex(awg.InstallError, 'found 7.24.5'):
+            awg.preflight(RouterProbe('7.24.5 (stable)'), self.settings, tested_ros='7.23.8')
+        with self.assertRaisesRegex(awg.InstallError, 'found 7.23.8'):
+            awg.preflight(RouterProbe('7.23.8 (long-term)'), self.settings)
+
     def test_config_preserves_keys_and_new_protocol_fields(self):
         self.assertIn('PrivateKey = ' + KEY, self.parsed.text)
         self.assertIn('RandomTrailers = on', self.parsed.text)

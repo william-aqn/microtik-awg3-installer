@@ -39,7 +39,7 @@ func TestCustomOnlyPolicyAndNormalization(t *testing.T) {
 func TestCustomListSyntaxAndLineErrors(t *testing.T) {
 	ips, domains := map[string]bool{}, map[string]Domain{}
 	e := readCustomList(strings.NewReader("\uFEFF# My rules\r\nExample.COM # comment\nfull:example.com\nfull:a.example.com\n203.0.113.7/24\n203.0.113.0/24\n198.51.100.7\n"), ips, domains)
-	if e != nil || len(ips) != 2 || !reflect.DeepEqual(sortedDomains(domains), []Domain{{"example.com", true}}) {
+	if e != nil || len(ips) != 2 || !reflect.DeepEqual(sortedDomains(domains), []Domain{{Name: "example.com", Suffix: true}}) {
 		t.Fatalf("%v %v %v", e, ips, domains)
 	}
 	for _, rule := range []string{"<html>404</html>", "regexp:.*", "keyword:video", "*.example.com", "||example.com^", "127.0.0.1 example.com", "https://example.com/path", "[Interface]", "2001:db8::/32", "999.1.2.3", "bad; /system/reset", "xn--bad_.com"} {
@@ -107,13 +107,13 @@ func TestCustomAndBuiltinUnion(t *testing.T) {
 		return os.WriteFile(path, []byte("example.com\nfull:child.example.com\n203.0.113.0/24\n198.51.100.2\n"), 0600)
 	}
 	b, e := compileSourcesWith(context.Background(), p, t.TempDir(), fetch, fetchCustom)
-	if e != nil || len(b.IPs) != 3 || !reflect.DeepEqual(b.Domains, []Domain{{"exact.example.net", false}, {"example.com", true}}) {
+	if e != nil || len(b.IPs) != 3 || !reflect.DeepEqual(b.Domains, []Domain{{Name: "exact.example.net"}, {Name: "example.com", Suffix: true}}) {
 		t.Fatalf("%+v %v", b, e)
 	}
 	state := Saved{Policy: p, Bundle: b, Revision: "custom"}
 	script := applyScript(Settings{LAN: "192.168.3.0/24"}, state, "a")
-	if strings.Count(script, `"s:example.com"`) != 1 || strings.Contains(script, `"f:example.com"`) {
-		t.Fatal("Duplicate RouterOS FWD names")
+	if strings.Contains(script, "example.com") || strings.Contains(script, "/ip/dns/static/add") {
+		t.Fatal("Domain rules must stay on USB, not in RouterOS configuration")
 	}
 	if routeFor(t, policyRules(p, "a"), "unknown", "198.51.100.2", true, map[string][]string{"AWG3UI-ip-a": b.IPs}) != "to-awg" {
 		t.Fatal("Custom subnet did not use VPN")

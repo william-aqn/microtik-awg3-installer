@@ -40,13 +40,13 @@ func TestGeoSiteFieldOrderAndSelection(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
-	want := []Domain{{"exact.example", false}, {"youtube.com", true}}
+	want := []Domain{{Name: "exact.example"}, {Name: "youtube.com", Suffix: true}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("%+v", got)
 	}
 }
 func TestGeoSiteUnsupportedDoesNotSilentlyDropRules(t *testing.T) {
-	for _, typ := range []byte{0, 1, 4} {
+	for _, typ := range []byte{0, 4} {
 		_, e := readGeoSite(bytes.NewReader(category("X", domain(typ, "example.com"))), []string{"x"})
 		if e == nil {
 			t.Fatalf("accepted type %d", typ)
@@ -154,7 +154,7 @@ func TestPolicyRoutingSemantics(t *testing.T) {
 	p.Default = "geo"
 	p.Devices = []Device{{"02:00:00:00:00:01", "direct", "direct"}, {"02:00:00:00:00:02", "vpn", "vpn"}}
 	script := policyRules(p, "a")
-	lists := map[string][]string{"AWG3UI-ip-a": {"1.1.1.0/24"}, "AWG3UI-dns-b": {"8.8.8.8/32"}}
+	lists := map[string][]string{"AWG3UI-ip-a": {"1.1.1.0/24"}, geoDNSList: {"8.8.8.8/32"}}
 	cases := []struct {
 		mac, ip string
 		ready   bool
@@ -180,13 +180,8 @@ func TestApplyKeepsGeoClosedUntilCommitAndCleanup(t *testing.T) {
 	if !strings.Contains(src, "dynamic=yes") || !strings.Contains(src, `/system/script/job/find`) {
 		t.Fatal("volatile data or cross-user serialization missing")
 	}
-	dnsRemove := strings.Index(src, `remove [find where comment="AWG3UI dns-a"]`)
-	dnsAdd := strings.Index(src, `/ip/dns/static/add`)
-	if !(dnsRemove > guard && dnsAdd > dnsRemove && commit > dnsAdd) {
-		t.Fatal("old FWD records would conflict with staged names")
-	}
-	if !strings.Contains(src, `:onerror applyError`) || !strings.Contains(src, `:error ("Panel apply failed: " . $applyError)`) {
-		t.Fatal("original RouterOS runtime error is lost")
+	if !strings.Contains(src, `Staged policy is incomplete`) || !strings.Contains(src, `free-memory`) {
+		t.Fatal("staging integrity or resource check is missing")
 	}
 	if strings.Contains(src, "PrivateKey") || strings.Contains(src, "/user/") {
 		t.Fatal("unrelated sensitive mutation")

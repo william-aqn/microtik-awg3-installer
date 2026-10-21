@@ -9,19 +9,34 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
 type Row map[string]string
 type Router struct {
-	settings Settings
-	client   *http.Client
+	settings  Settings
+	client    *http.Client
+	scriptMu  sync.Mutex
+	scriptDir string
+	geo       *GeoDNS
+	dnsRAM    *dnsRegistrar
 }
 
 func newRouter(s Settings) *Router {
-	return &Router{s, &http.Client{Timeout: 65 * time.Second, Transport: &http.Transport{MaxIdleConns: 1, MaxConnsPerHost: 1}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Router redirect refused") }}}
+	// List updates and DNS learning must not monopolize route-health reads.
+	r := &Router{settings: s, client: &http.Client{Timeout: 65 * time.Second, Transport: &http.Transport{MaxIdleConns: 3, MaxConnsPerHost: 3}, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("Router redirect refused") }}}
+	r.dnsRAM = &dnsRegistrar{router: r, items: map[string]dnsLease{}}
+	r.geo = newGeoDNS(s.Gateway, r.dnsRAM.learn)
+	if s.DataDir != "" {
+		r.geo.aliasPath = filepath.Join(s.DataDir, "dns-aliases.json")
+		r.dnsRAM.path = filepath.Join(s.DataDir, "dns-routes.json")
+	}
+	return r
 }
 func (r *Router) call(ctx context.Context, method, path string, in, out any) error {
 	var body io.Reader
@@ -75,17 +90,44 @@ func (r *Router) rows(ctx context.Context, path, props string, query ...string) 
 	return out, e
 }
 func (r *Router) script(ctx context.Context, name, source string) error {
-	rows, e := r.rows(ctx, "system/script", ".id,name,comment", "name="+name)
+	r.scriptMu.Lock()
+	defer r.scriptMu.Unlock()
+	if len(source) > 48000 || !ifaceName.MatchString(name) {
+		return errors.New("Router script exceeds the 48 KB batch limit")
+	}
+	rows, e := r.rows(ctx, "system/script", ".id,name,comment,source", "name="+name)
 	if e != nil {
 		return e
 	}
-	fields := map[string]string{"name": name, "source": source, "policy": "read,write,test", "comment": Tag + "managed"}
+	if len(rows) > 1 || (len(rows) == 1 && rows[0]["comment"] != Tag+"managed") {
+		return errors.New("Script name is occupied by another configuration")
+	}
+	if r.scriptDir == "" {
+		mounts, err := r.rows(ctx, "container/mounts", "list,src,dst", "list=awg_control_mount", "dst="+r.settings.DataDir)
+		if err != nil {
+			return err
+		}
+		if len(mounts) != 1 || r.settings.DataDir == "" {
+			return errors.New("Cannot locate the AWG Control USB mount")
+		}
+		src := strings.TrimPrefix(mounts[0]["src"], "/")
+		if !regexp.MustCompile(`^usb[A-Za-z0-9_-]*/awg-control-data$`).MatchString(src) {
+			return errors.New("Router batch files must use the managed external USB directory")
+		}
+		r.scriptDir = src
+	}
+	file := "router-" + name + ".rsc"
+	if e = writeData(filepath.Join(r.settings.DataDir, file), []byte(source)); e != nil {
+		return errors.New("Cannot write the router command batch on USB")
+	}
+	// Keep only a small, stable loader in RouterOS configuration. Rewriting a
+	// large script for every batch can fill the 16 MiB configuration storage.
+	loader := "/import file-name=" + rq(r.scriptDir+"/"+file)
+	fields := map[string]string{"name": name, "source": loader, "policy": "read,write,test", "comment": Tag + "managed"}
 	if len(rows) == 0 {
 		e = r.call(ctx, "PUT", "system/script", fields, nil)
-	} else if len(rows) == 1 && rows[0]["comment"] == Tag+"managed" {
+	} else if rows[0]["source"] != loader {
 		e = r.call(ctx, "PATCH", "system/script/"+rows[0][".id"], fields, nil)
-	} else {
-		return errors.New("Script name is occupied by another configuration")
 	}
 	if e != nil {
 		return e
@@ -123,8 +165,10 @@ func (r *Router) preflight(ctx context.Context) (Row, error) {
 	if flash < 160<<10 {
 		return nil, errors.New("Update refused: router has less than 160 KiB free internal flash")
 	}
-	if rows[0]["board-name"] != "hAP ac^2" || rows[0]["version"] != "7.24.5 (stable)" && rows[0]["version"] != "7.24.5" {
-		return nil, errors.New("This experimental panel targets hAP ac2 with RouterOS 7.24.5 only")
+	// Earlier builds can grow the flash configuration store even for dynamic
+	// lists. Keep the tested version boundary until other patched releases pass.
+	if rows[0]["board-name"] != "hAP ac^2" || rows[0]["version"] != "7.23.8 (long-term)" && rows[0]["version"] != "7.23.8" {
+		return nil, errors.New("USB Geo requires the tested hAP ac2 / RouterOS 7.23.8 long-term with the flash-store fix; see GOTCHAS.md")
 	}
 	v6, e := r.rows(ctx, "ipv6/route", "dst-address,active", "dst-address=::/0")
 	if e != nil {
@@ -165,8 +209,7 @@ func policyRules(p Policy, slot string) string {
 			b.WriteString(mark(chain, mac, "", "to-awg"))
 		case "geo":
 			b.WriteString(mark(chain, mac, "dst-address-list=AWG3UI-ip-"+slot, "to-awg"))
-			b.WriteString(mark(chain, mac, "dst-address-list=AWG3UI-dns-a", "to-awg"))
-			b.WriteString(mark(chain, mac, "dst-address-list=AWG3UI-dns-b", "to-awg"))
+			b.WriteString(mark(chain, mac, "dst-address-list="+geoDNSList, "to-awg"))
 			b.WriteString(mark(chain, mac, "src-address-list=AWG3UI-ready", "main"))
 			b.WriteString(mark(chain, mac, "", "to-awg"))
 		}
@@ -178,7 +221,7 @@ func policyRules(p Policy, slot string) string {
 	return b.String()
 }
 func clearSlot(slot string) string {
-	return "/ip/firewall/mangle/remove [find where chain=" + rq("AWG3UI-"+slot) + "];\n/ip/firewall/address-list/remove [find where list=" + rq("AWG3UI-ip-"+slot) + "];\n/ip/dns/static/remove [find where comment=" + rq(Tag+"dns-"+slot) + "];\n"
+	return "/ip/firewall/mangle/remove [find where chain=" + rq("AWG3UI-"+slot) + "];\n/ip/firewall/address-list/remove [find where list=" + rq("AWG3UI-ip-"+slot) + "];\n"
 }
 func flushConnections(lan string) string {
 	p, _ := netip.ParsePrefix(lan)
@@ -187,46 +230,122 @@ func flushConnections(lan string) string {
 	return "/ip/firewall/connection/remove [find where src-address~" + rq("^"+prefix) + "];\n/ip/dns/cache/flush;\n"
 }
 func applyScript(s Settings, state Saved, slot string) string {
+	return beginPolicy(slot) + ipBatch(state.Bundle.IPs, slot) + commitPolicy(s, state, slot)
+}
+
+const policyBatchSize = 512
+const domainBatchSize = 64
+
+var routerRecordID = regexp.MustCompile(`^\*[0-9A-Fa-f]+$`)
+
+func policyGuard() string {
+	return policyJobGuard() +
+		":if ([/system/resource/get free-memory] < 12582912 || [/system/resource/get free-hdd-space] < 131072) do={ :error \"Policy update stopped: low router memory or flash; Geo remains on VPN\" };\n"
+}
+
+func policyJobGuard() string {
+	return ":if ([:len [/system/script/job/find where script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" };\n"
+}
+
+func beginPolicy(slot string) string {
+	var b strings.Builder
+	b.WriteString(policyGuard())
+	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-ready\"];\n")
+	b.WriteString("/ip/firewall/mangle/remove [find where chain=" + rq("AWG3UI-"+slot) + "];\n")
+	return b.String()
+}
+
+// DNS removal can exceed the RouterOS REST command deadline just like adding
+// records. Remove bounded ID batches, leaving the committed USB snapshot intact.
+func (r *Router) pruneSlot(ctx context.Context, slot string, inactiveOnly bool, report func(string)) error {
+	guard := policyJobGuard()
+	if inactiveOnly {
+		guard += ":if ([:len [/ip/firewall/mangle/find where comment~\"^AWG3UI entry \" and jump-target=" + rq("AWG3UI-"+slot) + "]] > 0) do={ :error \"Slot is active; cleanup refused\" };\n"
+	} else {
+		guard += ":if ([:len [/ip/firewall/address-list/find where list=\"AWG3UI-ready\"]] > 0) do={ :error \"Geo is ready; cleanup refused\" };\n"
+	}
+	rows, err := r.rows(ctx, "ip/firewall/address-list", ".id", "list=AWG3UI-ip-"+slot)
+	if err != nil {
+		return err
+	}
+	return r.removeRows(ctx, "ip/firewall/address-list", rows, policyBatchSize, guard, report)
+}
+
+func (r *Router) removeRows(ctx context.Context, path string, rows []Row, batch int, guard string, report func(string)) error {
+	for start := 0; start < len(rows); start += batch {
+		end := min(start+batch, len(rows))
+		ids := make([]string, 0, end-start)
+		for _, row := range rows[start:end] {
+			if !routerRecordID.MatchString(row[".id"]) {
+				return errors.New("Invalid router record ID; cleanup refused")
+			}
+			ids = append(ids, rq(row[".id"]))
+		}
+		report(fmt.Sprintf("Applying policy: clearing %s (%d / %d); Geo temporarily uses VPN", path, start, len(rows)))
+		source := guard + ":foreach id in={" + strings.Join(ids, ";") + "} do={ /" + path + "/remove $id };\n"
+		if err := r.script(ctx, "awg-ui-apply", source); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ipBatch(ips []string, slot string) string {
+	var b strings.Builder
+	if len(ips) > 0 {
+		items := make([]string, 0, len(ips))
+		for _, ip := range ips {
+			items = append(items, rq(ip))
+		}
+		b.WriteString(":foreach ip in={" + strings.Join(items, ";") + "} do={ /ip/firewall/address-list/add list=AWG3UI-ip-" + slot + " address=$ip dynamic=yes comment=" + rq(Tag+"data") + "; };\n")
+	}
+	return b.String()
+}
+
+func commitPolicy(s Settings, state Saved, slot string) string {
 	other := "a"
 	if slot == "a" {
 		other = "b"
 	}
 	var b strings.Builder
-	b.WriteString(":if ([:len [/system/script/job/find where script=\"awg-ui-guard\"]] > 0 || [:len [/system/script/job/find where script=\"awg-ui-apply\"]] > 1) do={ :error \"AWG operation is already running\" }; :local committed false;\n:onerror applyError in={\n")
-	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-ready\"];\n")
-	b.WriteString(clearSlot(slot))
-	// RouterOS rejects two FWD records with the same name and type, even when
-	// they populate different address lists. Geo is fail-closed until READY is
-	// restored, so replace the old DNS records before staging the new set.
-	b.WriteString("/ip/dns/static/remove [find where comment=" + rq(Tag+"dns-"+other) + "];\n")
-	if len(state.Bundle.IPs) > 0 {
-		items := make([]string, 0, len(state.Bundle.IPs))
-		for _, ip := range state.Bundle.IPs {
-			items = append(items, rq(ip))
-		}
-		b.WriteString(":foreach ip in={" + strings.Join(items, ";") + "} do={ /ip/firewall/address-list/add list=AWG3UI-ip-" + slot + " address=$ip dynamic=yes comment=" + rq(Tag+"data") + "; };\n")
-	}
-	if len(state.Bundle.Domains) > 0 {
-		items := make([]string, 0, len(state.Bundle.Domains))
-		for _, d := range state.Bundle.Domains {
-			kind := "f:"
-			if d.Suffix {
-				kind = "s:"
-			}
-			items = append(items, rq(kind+d.Name))
-		}
-		b.WriteString(":foreach item in={" + strings.Join(items, ";") + "} do={ :local sub false; :if ([:pick $item 0 1] = \"s\") do={ :set sub true }; /ip/dns/static/add name=[:pick $item 2 [:len $item]] type=FWD match-subdomain=$sub address-list=AWG3UI-dns-" + slot + " comment=" + rq(Tag+"dns-"+slot) + "; };\n")
-	}
+	b.WriteString(policyGuard())
+	b.WriteString(fmt.Sprintf(":if ([:len [/ip/firewall/address-list/find where list=%s]] != %d || [:len [/ip/dns/static/find where comment~\"^AWG3UI dns-\"]] != 0) do={ :error \"Staged policy is incomplete; Geo remains on VPN\" };\n", rq("AWG3UI-ip-"+slot), len(state.Bundle.IPs)))
 	b.WriteString(policyRules(state.Policy, slot))
-	b.WriteString("/ip/firewall/mangle/set [find where comment~\"^AWG3UI entry \"] jump-target=AWG3UI-" + slot + " comment=" + rq(Tag+"entry "+state.Revision) + "; :set committed true;\n")
+	b.WriteString("/ip/firewall/mangle/set [find where comment~\"^AWG3UI entry \"] jump-target=AWG3UI-" + slot + " comment=" + rq(Tag+"entry "+state.Revision) + ";\n")
 	b.WriteString(clearSlot(other))
-	b.WriteString("/ip/firewall/address-list/remove [find where list=\"AWG3UI-dns-a\" or list=\"AWG3UI-dns-b\"];\n")
+	// Keep learned RAM addresses across updates and container restarts. Clients
+	// can still hold DNS answers; every learned address expires automatically.
 	b.WriteString(flushConnections(s.LAN))
 	b.WriteString("/ip/firewall/address-list/add list=AWG3UI-ready address=" + s.LAN + " dynamic=yes comment=" + rq(Tag+"ready") + ";\n")
-	b.WriteString("} do={ :if ($committed = false) do={ " + clearSlot(slot) + " }; :log error (\"AWG3UI: apply failed: \" . $applyError); :error (\"Panel apply failed: \" . $applyError) };\n")
 	return b.String()
 }
-func (r *Router) apply(ctx context.Context, state Saved) error {
+
+func coveredStaticA(row Row, bundle Bundle) bool {
+	// Exact A overrides (for example pinned DNS bootstrap addresses) can skip
+	// container-side DNS learning. They are safe only when that fixed address is already routed
+	// by the selected IP list. Keep the original record and its bootstrap role.
+	if row["type"] != "A" || row["regexp"] != "" || row["match-subdomain"] == "true" {
+		return false
+	}
+	address, e := netip.ParseAddr(row["address"])
+	if e != nil || !address.Is4() {
+		return false
+	}
+	for _, item := range bundle.IPs {
+		prefix, e := netip.ParsePrefix(item)
+		if e == nil && prefix.Contains(address) {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *Router) apply(ctx context.Context, state Saved, progress ...func(string)) (result error) {
+	report := func(message string) {
+		for _, callback := range progress {
+			callback(message)
+		}
+	}
 	state.Policy = state.Policy.Clone()
 	if e := state.Policy.Validate(); e != nil {
 		return e
@@ -238,17 +357,27 @@ func (r *Router) apply(ctx context.Context, state Saved) error {
 	if e != nil {
 		return e
 	}
-	// Existing exact/suffix/regexp overrides can prevent the panel FWD record
-	// from ever observing DNS answers. Refuse ambiguous overlap explicitly.
-	dns, e := r.rows(ctx, "ip/dns/static", "name,regexp,match-subdomain,comment,disabled")
+	if e = r.dnsRAM.seed(ctx); e != nil {
+		return e
+	}
+	// Existing exact/suffix/regexp overrides can prevent the container DNS
+	// observer from ever seeing those answers. Refuse ambiguous overlap explicitly.
+	dns, e := r.rows(ctx, "ip/dns/static", ".id,name,type,address,regexp,match-subdomain,address-list,comment,disabled")
 	if e != nil {
 		return e
 	}
 	for _, row := range dns {
-		if row["disabled"] == "true" || strings.HasPrefix(row["comment"], Tag) {
+		if row["disabled"] == "true" || strings.HasPrefix(row["comment"], Tag) || coveredStaticA(row, state.Bundle) {
 			continue
 		}
 		for _, d := range state.Bundle.Domains {
+			if d.Regexp {
+				pattern, _ := regexp.CompilePOSIX(d.Name) // Bundle.Validate checked it.
+				if row["regexp"] != "" || row["match-subdomain"] == "true" || pattern.MatchString(strings.ToLower(row["name"])) {
+					return errors.New("GeoSite regexp rules may overlap an existing DNS override; review IP > DNS > Static before applying")
+				}
+				continue
+			}
 			name := strings.ToLower(row["name"])
 			if row["regexp"] != "" || name == d.Name || (d.Suffix && strings.HasSuffix(name, "."+d.Name)) || (row["match-subdomain"] == "true" && strings.HasSuffix(d.Name, "."+name)) {
 				return errors.New("Selected Geo domain overlaps an existing DNS override. Review IP > DNS > Static before applying")
@@ -259,11 +388,68 @@ func (r *Router) apply(ctx context.Context, state Saved) error {
 	if entry["jump-target"] == "AWG3UI-a" {
 		slot = "b"
 	}
-	source := applyScript(r.settings, state, slot)
-	if len(source) > 60000 {
-		return errors.New("Policy script exceeds 60 KB flash budget; reduce device overrides or domain names")
+	var obsoleteDNS []Row
+	for _, row := range dns {
+		if strings.HasPrefix(row["comment"], Tag+"dns-") {
+			obsoleteDNS = append(obsoleteDNS, row)
+		}
 	}
-	return r.script(ctx, "awg-ui-apply", source)
+	defer func() {
+		if result == nil {
+			return
+		}
+		// A failed batch must not consume staging memory indefinitely. Never
+		// remove the slot if the commit already switched the live entry to it.
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		entries, err := r.rows(cleanup, "ip/firewall/mangle", ".id", "comment="+Tag+"entry "+state.Revision, "jump-target=AWG3UI-"+slot)
+		if err == nil && len(entries) > 0 {
+			return
+		}
+		if err == nil {
+			err = r.pruneSlot(cleanup, slot, true, report)
+		}
+		if err != nil {
+			result = fmt.Errorf("%w; staging cleanup failed: %v", result, err)
+		}
+	}()
+	report("Applying policy: releasing previous lists; Geo temporarily uses VPN")
+	if e = r.script(ctx, "awg-ui-apply", beginPolicy(slot)); e != nil {
+		return e
+	}
+	// Geo is fail-closed while both old and stale staging data are released.
+	// Do not hold two complete policy copies in the router's limited RAM.
+	for _, old := range []string{"a", "b"} {
+		if e = r.pruneSlot(ctx, old, false, report); e != nil {
+			return fmt.Errorf("Previous-list cleanup: %w. Geo remains on VPN; retry Apply", e)
+		}
+	}
+	if e = r.removeRows(ctx, "ip/dns/static", obsoleteDNS, domainBatchSize, policyJobGuard(), report); e != nil {
+		return fmt.Errorf("DNS cleanup: %w. Geo remains on VPN; retry Apply", e)
+	}
+	// Measure after releasing the old lists. Do not lower the memory reserve
+	// merely because an earlier full copy was still consuming it.
+	resources, e := r.rows(ctx, "system/resource", "free-memory")
+	if e != nil || len(resources) != 1 {
+		return errors.New("Cannot check staging memory; Geo remains on VPN until Apply succeeds")
+	}
+	free, _ := strconv.ParseInt(resources[0]["free-memory"], 10, 64)
+	required := int64(14<<20) + int64(len(state.Bundle.IPs))*256 + int64(len(state.Bundle.Domains))*1024
+	if free < required {
+		return fmt.Errorf("Policy needs %.1f MiB free RAM for staging; router has %.1f MiB. Geo remains on VPN; choose fewer rules and apply", float64(required)/(1<<20), float64(free)/(1<<20))
+	}
+	for start := 0; start < len(state.Bundle.IPs); start += policyBatchSize {
+		end := min(start+policyBatchSize, len(state.Bundle.IPs))
+		report(fmt.Sprintf("Applying IPv4 prefixes: %d / %d; Geo temporarily uses VPN", start, len(state.Bundle.IPs)))
+		if e = r.script(ctx, "awg-ui-apply", policyGuard()+ipBatch(state.Bundle.IPs[start:end], slot)); e != nil {
+			return fmt.Errorf("IPv4 batch %d: %w. Geo remains on VPN; retry Apply", start/policyBatchSize+1, e)
+		}
+	}
+	if e = r.geo.setDomains(state.Bundle.Domains); e != nil {
+		return e
+	}
+	report("Applying completed lists and verifying counts; Geo temporarily uses VPN")
+	return r.script(ctx, "awg-ui-apply", commitPolicy(r.settings, state, slot))
 }
 func (r *Router) diagnostics(ctx context.Context) (map[string]any, error) {
 	out := map[string]any{"panel_version": Version, "time": time.Now().UTC().Format(time.RFC3339)}

@@ -90,6 +90,7 @@ def stop_script(lan):
 :if ([/container/get $c stopped] != true) do={{ :log error "AWGC: stop incomplete"; :return 0 }};
 /ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "];
 /routing/rule/disable [find where comment~"^AWGC DNS "];
+:if ([:len [/system/script/find where name="awg-control-direct-dns"]] = 1) do={{ /system/script/run awg-control-direct-dns }} else={{ :if ([:len [/system/script/find where name="awg-control-restore-dns"]] = 1) do={{ /system/script/run awg-control-restore-dns }} }};
 /ip/firewall/connection/remove [find where src-address~{quote(prefix)}];
 /ip/dns/cache/flush;
 :if ([:len $led] = 1) do={{ /system/leds/set $led type=off }};
@@ -183,10 +184,11 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
     setup = [
         '# Private deployment bundle. Do not publish; contains service credentials in fresh mode.',
         RESET_CHECK,
-        ':if ([/system/resource/get board-name] != "hAP ac^2" || [/system/resource/get version] != "7.24.5 (stable)") do={ :error "Validated target: hAP ac2 / RouterOS 7.24.5 stable" }',
+        ':if ([/system/resource/get board-name] != "hAP ac^2" || [/system/resource/get version] != "7.23.8 (long-term)") do={ :error "USB Geo requires hAP ac2 / RouterOS 7.23.8 long-term with the flash-store fix; see GOTCHAS.md" }',
         ':if ([/system/resource/get free-memory] < 25165824 || [/system/resource/get free-hdd-space] < 163840) do={ :error "Need 24 MiB RAM and 160 KiB flash free" }',
         ':if ([:len [/container/find where name="awg-control"]] > 0 || [:len [/user/find where name="awg-control"]] > 0 || [:len [/system/script/find where name="awg-control-restore-dns"]] > 0) do={ :error "Already installed or partial migration; inspect rollback before retrying" }',
         ':if ([:len [/ipv6/route/find where dst-address="::/0" and active]] > 0) do={ :error "IPv6 internet is not supported by this release" }',
+        ':if ([/ip/dns/get use-doh-server] != "" || [:len [/ip/dns/get dynamic-servers]] > 0) do={ :error "Geo DNS requires no DoH or dynamic DNS fallback; see GOTCHAS.md" }',
         f':if ([:len [/file/find where name={quote(disk + "/awg-control.tar")}]] != 1 || [:len [/file/find where name={quote(disk + "/awg-control-data/settings.json")}]] != 1) do={{ :error "Upload image and private data to USB first" }}',
         ':if ([/ip/service/get [/ip/service/find where name="www" and dynamic=no] disabled] = true || [/ip/service/get [/ip/service/find where name="www" and dynamic=no] port] != 80) do={ :error "Enable local www port 80 and permit 172.18.20.2/32 before import" }',
     ]
@@ -223,7 +225,9 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
         ]
     checks = [line for line in setup if line.startswith(':if ') and 'do={ :error' in line]
     actions = [line for line in setup if line not in checks]
-    dns_snapshot = r':local oldDNS [/ip/dns/get servers]; :local oldRemote [/ip/dns/get allow-remote-requests]; /system/script/add name=awg-control-restore-dns policy=read,write source=("/ip/dns/set servers=\"" . [:tostr $oldDNS] . "\" allow-remote-requests=" . $oldRemote)'
+    # RouterOS :tostr on an array uses semicolons, which are not an IP-list
+    # separator. Build a comma-separated value before saving the command.
+    dns_snapshot = r':local oldDNS ""; :foreach server in=[/ip/dns/get servers] do={ :if ([:len $oldDNS] > 0) do={ :set oldDNS ($oldDNS . ",") }; :set oldDNS ($oldDNS . $server) }; :local oldRemote [/ip/dns/get allow-remote-requests]; /system/script/add name=awg-control-restore-dns policy=read,write source=("/ip/dns/set servers=\"" . $oldDNS . "\" allow-remote-requests=" . $oldRemote)'
     setup = checks + [f'/system/backup/save name={quote(disk + "/before-awg-control")}'] + ntp_setup() + [dns_snapshot] + actions
     setup += [
         '/ip/firewall/filter/add chain=input in-interface=docker-awg-veth action=drop comment="AWGC input guard" place-before=0',
@@ -277,7 +281,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
         '/ip/firewall/mangle/disable [find where comment~"^AWG3UI entry "]',
         ':local c [/container/find where name="awg-control"]; :if ([:len $c] = 1) do={ :local wasRunning [/container/get $c running]; /container/set $c start-on-boot=no; :if ($wasRunning = true) do={ /container/stop $c }; :for i from=1 to=30 do={ :if ([/container/get $c stopped] != true) do={ :delay 1s } }; :if ([/container/get $c stopped] != true) do={ :error "Container still stopping" }; /container/remove $c }',
         '/routing/rule/remove [find where comment~"^AWGC DNS "]',
-        '/system/script/remove [find where name="awg-mode" or name="awg-stop" or name="awg-mode-button" or name="awg-control-configure" or name="awg-control-gate"]',
+        '/system/script/remove [find where name="awg-mode" or name="awg-stop" or name="awg-mode-button" or name="awg-control-configure" or name="awg-control-gate" or name="awg-control-direct-dns"]',
         ':if ([:len [/system/script/find where name="awg-control-restore-reset"]] = 1) do={ /system/script/run awg-control-restore-reset; /system/script/remove [find where name="awg-control-restore-reset"] }',
         '/container/mounts/remove [find where list="awg_control_mount"]',
     ]

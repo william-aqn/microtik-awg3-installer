@@ -10,7 +10,7 @@ RUN git init && git remote add origin https://github.com/amnezia-vpn/amneziawg-g
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GOARM=7 \
     go build -trimpath -ldflags="-s -w" -o /amneziawg-go .
 WORKDIR /src
-COPY go.mod *.go ./
+COPY go.mod go.sum *.go ./
 COPY web ./web
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=$TARGETARCH GOARM=7 \
     go build -trimpath -ldflags="-s -w" -o /awg-control .
@@ -29,6 +29,9 @@ COPY --from=packages /rootfs/ /
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /amneziawg-go /usr/bin/amneziawg-go
 COPY --from=build /engine/LICENSE /usr/share/licenses/amneziawg-go/LICENSE
+COPY --from=build /go/pkg/mod/github.com/miekg/dns@v1.1.73/LICENSE /usr/share/licenses/miekg-dns/LICENSE
+COPY --from=build /go/pkg/mod/golang.org/x/net@v0.57.0/LICENSE /usr/share/licenses/golang-x-net/LICENSE
+COPY --from=build /go/pkg/mod/golang.org/x/sys@v0.47.0/LICENSE /usr/share/licenses/golang-x-sys/LICENSE
 COPY --from=build /awg-control /awg-control
 ENV GOMEMLIMIT=8MiB GOGC=30 GOMAXPROCS=1
 EXPOSE 8088

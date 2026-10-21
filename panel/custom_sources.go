@@ -91,12 +91,16 @@ func (p *Policy) validateCustom() error {
 	return nil
 }
 
-// The suffix rule wins over the exact rule for the same name: RouterOS cannot
-// add two FWD records with an identical name. Budgets apply to the whole union.
+// The suffix rule covers the exact rule for the same name. Budgets apply
+// to the whole union of built-in categories and custom rules.
 func addDomain(out map[string]Domain, d Domain) error {
-	old, exists := out[d.Name]
+	key := d.Name
+	if d.Regexp {
+		key = "regexp:" + key
+	}
+	old, exists := out[key]
 	d.Suffix = d.Suffix || exists && old.Suffix
-	out[d.Name] = d
+	out[key] = d
 	if len(out) > MaxDomains {
 		return fmt.Errorf("Combined lists exceed %d domains; nothing was truncated", MaxDomains)
 	}
@@ -106,6 +110,10 @@ func addDomain(out map[string]Domain, d Domain) error {
 func sortedDomains(out map[string]Domain) []Domain {
 	domains := make([]Domain, 0, len(out))
 	for _, d := range out {
+		if d.Regexp {
+			domains = append(domains, d)
+			continue
+		}
 		covered := false
 		parent := d.Name
 		for {

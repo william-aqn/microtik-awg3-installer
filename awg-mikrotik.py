@@ -565,10 +565,10 @@ def diagnostics(router, report):
     return result
 
 
-def preflight(router, s):
+def preflight(router, s, *, tested_ros=TESTED_ROS):
     version = router.get('/system/resource', 'version').split()[0]
-    if version != TESTED_ROS or router.get('/system/resource', 'architecture-name') != 'arm':
-        raise InstallError(f'This installer targets ARM/hAP ac2, RouterOS {TESTED_ROS}; found {version}. Other versions need syntax validation.')
+    if version != tested_ros or router.get('/system/resource', 'architecture-name') != 'arm':
+        raise InstallError(f'This installer targets ARM/hAP ac2, RouterOS {tested_ros}; found {version}. Other versions need syntax validation.')
     if router.get('/system/resource', 'board-name') != TESTED_BOARD:
         raise InstallError('This profile supports only hAP ac2.')
     if router.count('/system/package', 'name="container" and disabled=no') != 1:

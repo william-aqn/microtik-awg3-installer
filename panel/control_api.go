@@ -211,12 +211,23 @@ func (a *App) watchTunnel() {
 }
 func (a *App) diagnostics(ctx context.Context) map[string]any {
 	d := map[string]any{"version": Version}
+	// Capture the local tunnel before a large RouterOS table exhausts the
+	// request deadline. A slow ready-list read must not invent a disconnected VPN.
+	var tunnel *TunnelStatus
+	if a.tunnel != nil {
+		s := a.tunnel.Status(ctx)
+		tunnel = &s
+	}
 	if a.router != nil {
 		d, _ = a.router.diagnostics(ctx)
+		d["dns"] = a.router.geo.status()
 	}
-	if a.tunnel != nil {
-		d["tunnel"] = a.tunnel.Status(ctx)
+	if tunnel != nil {
+		d["tunnel"] = *tunnel
 	}
+	a.mu.Lock()
+	d["geo_error"] = a.geoError
+	a.mu.Unlock()
 	return d
 }
 func (a *App) saveDiagnostic(e error) {

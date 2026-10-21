@@ -13,14 +13,15 @@ import (
 )
 
 const (
-	Version        = "0.2.4"
-	MaxIPs         = 512
-	MaxDomains     = 256
+	Version        = "0.2.5"
+	MaxIPs         = 32768
+	MaxDomains     = 2048
+	MaxRegex       = 32
 	MaxDevices     = 24
 	MaxSources     = 12
 	MaxDownload    = 48 << 20
-	MaxDNSIPs      = 2048
-	MaxPolicyBytes = 128 << 10
+	MaxDNSIPs      = 8192
+	MaxPolicyBytes = 2 << 20
 	Tag            = "AWG3UI "
 )
 
@@ -43,6 +44,7 @@ type Policy struct {
 type Domain struct {
 	Name   string `json:"name"`
 	Suffix bool   `json:"suffix"`
+	Regexp bool   `json:"regexp,omitempty"`
 }
 type Bundle struct {
 	IPs         []string `json:"ips"`
@@ -164,7 +166,16 @@ func (b Bundle) Validate() error {
 			return errors.New("Invalid IPv4 prefix in saved data")
 		}
 	}
+	regexCount := 0
 	for _, d := range b.Domains {
+		if d.Regexp {
+			regexCount++
+			translated, e := geoRegexp(d.Name)
+			if e != nil || translated != d.Name || d.Suffix || regexCount > MaxRegex {
+				return errors.New("Invalid or excessive GeoSite regular expressions")
+			}
+			continue
+		}
 		if !validDomain(d.Name) {
 			return errors.New("Invalid domain in saved data")
 		}
@@ -181,7 +192,7 @@ func readJSON(path string, out any) error {
 	if e != nil {
 		return e
 	}
-	if info.Size() > 1<<20 {
+	if info.Size() > 8<<20 {
 		return errors.New("State file too large")
 	}
 	dec := json.NewDecoder(f)
@@ -193,7 +204,10 @@ func writeJSON(path string, value any) error {
 	if e != nil {
 		return e
 	}
-	if e = os.MkdirAll(filepath.Dir(path), 0700); e != nil {
+	return writeData(path, b)
+}
+func writeData(path string, b []byte) error {
+	if e := os.MkdirAll(filepath.Dir(path), 0700); e != nil {
 		return e
 	}
 	f, e := os.OpenFile(path+".tmp", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)

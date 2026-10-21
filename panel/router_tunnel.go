@@ -19,6 +19,10 @@ func (r *Router) Configure(ctx context.Context, c VPNConfig, endpoint string) er
 	if lan.Contains(addr.Addr()) || netip.MustParsePrefix("172.18.20.0/30").Overlaps(addr) {
 		return errors.New("Tunnel address overlaps LAN or container management")
 	}
+	if err := r.prepareDirectDNS(ctx, c.DNS); err != nil {
+		return err
+	}
+	r.geo.setUpstreams(c.DNS)
 	var b strings.Builder
 	b.WriteString(`:if ([:len [/ip/firewall/filter/find where comment="AWGC encrypted transport"]] != 1 || [:len [/ip/firewall/nat/find where comment="AWGC endpoint NAT"]] != 1) do={ :error "Transport integration missing" };` + "\n")
 	fmt.Fprintf(&b, "/ip/firewall/filter/set [find where comment=\"AWGC encrypted transport\"] dst-address=%s dst-port=%d;\n", endpoint, c.Port)
@@ -40,7 +44,47 @@ func (r *Router) Gate(ctx context.Context, on bool) error {
 	}
 	source := `:local entry [/ip/firewall/mangle/find where comment~"^AWG3UI entry "]; :if ([:len $entry] != 1) do={ :error "Policy entry missing" };` + "\n"
 	source += "/ip/firewall/mangle/set $entry disabled=" + disabled + ";\n/routing/rule/" + enabled + " [find where comment~\"^AWGC DNS \"];\n" + flushConnections(r.settings.LAN)
+	if on {
+		source += "/ip/dns/set servers=172.18.20.2;\n/ip/dns/cache/flush;\n"
+	} else {
+		source += ":if ([:len [/system/script/find where name=\"awg-control-direct-dns\"]] = 1) do={ /system/script/run awg-control-direct-dns } else={ :if ([:len [/system/script/find where name=\"awg-control-restore-dns\"]] = 1) do={ /system/script/run awg-control-restore-dns } };\n/ip/dns/cache/flush;\n"
+	}
 	return r.script(ctx, "awg-control-gate", source)
+}
+
+func (r *Router) prepareDirectDNS(ctx context.Context, servers []string) error {
+	rows, err := r.rows(ctx, "system/script", "source", "name=awg-stop")
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || !strings.Contains(rows[0]["source"], "/system/script/run awg-control-direct-dns") {
+		return errors.New("Update the Mode/Reset handlers with panel/prepare.py --buttons-only before using USB Geo DNS")
+	}
+	rows, err = r.rows(ctx, "ip/dns", "use-doh-server,dynamic-servers")
+	if err != nil {
+		return err
+	}
+	if len(rows) != 1 || rows[0]["use-doh-server"] != "" || rows[0]["dynamic-servers"] != "" {
+		return errors.New("Geo DNS requires no RouterOS DoH or dynamic DNS fallback; see GOTCHAS.md")
+	}
+	rows, err = r.rows(ctx, "system/script", ".id,source,comment", "name=awg-control-direct-dns")
+	if err != nil {
+		return err
+	}
+	if len(rows) > 1 || len(rows) == 1 && rows[0]["comment"] != Tag+"managed" {
+		return errors.New("Direct DNS helper name is occupied by another configuration")
+	}
+	// Two resolver addresses are small connection settings, not Geo list data.
+	// The emergency stop must work even when USB/container access is lost.
+	source := "/ip/dns/set servers=" + strings.Join(servers, ",")
+	fields := Row{"name": "awg-control-direct-dns", "source": source, "policy": "read,write,test", "comment": Tag + "managed"}
+	if len(rows) == 0 {
+		return r.call(ctx, "PUT", "system/script", fields, nil)
+	}
+	if rows[0]["source"] != source {
+		return r.call(ctx, "PATCH", "system/script/"+rows[0][".id"], fields, nil)
+	}
+	return nil
 }
 func (r *Router) LED(ctx context.Context, on bool) error {
 	jobs, e := r.rows(ctx, "system/script/job", "script")
