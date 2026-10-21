@@ -252,6 +252,8 @@ GeoSite принимает до **32 regexp** в общем лимите дом�
 
 На экране входа нажми **Reset password → Copy command**. В **WebFig → Terminal** под администратором RouterOS выполни:
 
+![Кнопка сброса пароля и команда для WebFig Terminal](docs/media/awg-password-reset.jpg)
+
 ```routeros
 /container/shell [/container/find where name="awg-control"] cmd="/awg-control --control reset-password" no-sh
 ```
