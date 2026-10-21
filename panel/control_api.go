@@ -219,7 +219,9 @@ func (a *App) diagnostics(ctx context.Context) map[string]any {
 		tunnel = &s
 	}
 	if a.router != nil {
+		traffic := a.router.traffic(ctx)
 		d, _ = a.router.diagnostics(ctx)
+		d["traffic"] = traffic
 		d["dns"] = a.router.geo.status()
 	}
 	if tunnel != nil {

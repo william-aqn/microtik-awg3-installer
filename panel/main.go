@@ -164,7 +164,7 @@ func (a *App) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch r.URL.Path {
-	case "/", "/app.js", "/profiles.js", "/password.js", "/style.css", "/geo.css", "/password.css":
+	case "/", "/app.js", "/profiles.js", "/password.js", "/traffic.js", "/style.css", "/geo.css", "/password.css", "/traffic.css":
 		sub, _ := fs.Sub(web, "web")
 		http.FileServer(http.FS(sub)).ServeHTTP(w, r)
 	default:
@@ -252,7 +252,8 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		out["profiles"] = a.profiles.List()
 	}
 	if a.demo {
-		out["router"] = []Row{{"board-name": "hAP ac^2", "version": "7.24.5", "free-memory": "29464985"}}
+		out["router"] = []Row{{"board-name": "hAP ac^2", "version": "7.23.8 (long-term)", "free-memory": "29464985"}}
+		out["traffic"] = TrafficSnapshot{Available: true, SampledAt: time.Now().UTC().Format(time.RFC3339), Direct: TrafficPath{Upload: TrafficCount{2 << 20, 3400}, Download: TrafficCount{28 << 20, 24000}}, VPN: TrafficPath{Upload: TrafficCount{5 << 20, 8200}, Download: TrafficCount{110 << 20, 93000}}}
 		out["leases"] = []Row{{"mac-address": "02:00:00:00:00:01", "address": "192.168.3.20", "host-name": "Laptop", "status": "bound"}, {"mac-address": "02:00:00:00:00:02", "address": "192.168.3.21", "host-name": "Phone", "status": "bound"}, {"mac-address": "02:00:00:00:00:03", "address": "192.168.3.22", "host-name": "TV", "status": "bound"}}
 		a.mu.Lock()
 		out["vpn_enabled"] = a.demoEnabled
@@ -285,6 +286,7 @@ func (a *App) status(w http.ResponseWriter, r *http.Request) {
 		out["router_error"] = e.Error()
 	}
 	out["leases"] = leases
+	out["traffic"] = a.router.traffic(ctx)
 	// Do not scan the large firewall table on every UI refresh. Readiness is
 	// verified when committing a policy and is available in explicit diagnostics.
 	reply(w, 200, out)
@@ -436,6 +438,12 @@ func (a *App) maintenance() {
 	// Always reconcile volatile lists after startup. If a previous commit reached
 	// the router but the process died before saving, recover its pending snapshot.
 	time.Sleep(5 * time.Second)
+	trafficCtx, trafficCancel := context.WithTimeout(context.Background(), time.Minute)
+	if err := a.router.initializeTraffic(trafficCtx); err != nil {
+		// Telemetry must never block policy restoration or the VPN connection.
+		log.Printf("AWGC traffic counters: %v", err)
+	}
+	trafficCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	var pending Saved
 	if readJSON(filepath.Join(a.s.DataDir, "pending.json"), &pending) == nil && pending.Policy.Validate() == nil && pending.Bundle.Validate() == nil {

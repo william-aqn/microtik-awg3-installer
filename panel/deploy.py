@@ -312,6 +312,7 @@ def build_bundle(lan, bridge, disk, upstream, wan_address, password, *, migratio
             '/user/group/remove [find where name="awg-control"]',
         ]
     rollback += [
+        '/ip/firewall/address-list/remove [find where list="AWGC-traffic-local" or list="AWGC-traffic-ready"]',
         ':if ([:len [/system/script/find where name="awg-control-restore-dns"]] = 1) do={ /system/script/run awg-control-restore-dns; /system/script/remove [find where name="awg-control-restore-dns"] }',
         ntp_rollback(),
         '/ip/dns/cache/flush',

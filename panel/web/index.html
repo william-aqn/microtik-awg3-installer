@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AWG Control</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/geo.css"><link rel="stylesheet" href="/password.css"><script src="/profiles.js" defer></script><script src="/password.js" defer></script><script src="/app.js" defer></script></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AWG Control</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/geo.css"><link rel="stylesheet" href="/password.css"><link rel="stylesheet" href="/traffic.css"><script src="/profiles.js" defer></script><script src="/password.js" defer></script><script src="/traffic.js" defer></script><script src="/app.js" defer></script></head>
 <body>
 <section id="login" hidden><div class="login-card"><div class="brand-symbol">A</div><p class="eyebrow">LOCAL NETWORK CONTROL</p><h1>Welcome to AWG.</h1><p>Sign in with your panel password.</p><form id="login-form"><label for="password">Password</label><input id="password" type="password" autocomplete="current-password" required><button type="submit" class="primary">Sign in</button></form><p id="login-error" role="alert"></p></div></section>
 <div id="app" hidden>
@@ -7,6 +7,13 @@
 <main><header><div class="crumb">NETWORK / AMNEZIAWG</div><span id="version" class="version"></span></header><div id="preview" class="notice" hidden>PREVIEW &middot; Sample devices. No router is connected; changes stay in this preview.</div>
 <div class="heading"><div><p class="eyebrow">YOUR NETWORK, YOUR ROUTES</p><h1>Traffic, on your terms.</h1><p class="subtitle">One connection. Your profiles. Your routes.</p></div><button id="save" class="primary" hidden>Apply changes <span>&#8599;</span></button></div>
 <div class="metrics"><article class="metric"><div class="metric-label">VPN SWITCH <span id="vpn-dot" class="status-dot"></span></div><div class="metric-row"><strong id="vpn-state">Checking</strong><button id="toggle" class="small-button">Toggle</button></div><p id="vpn-detail">Mode button and USR LED stay in sync.</p></article><article class="metric"><div class="metric-label">ROUTER MEMORY</div><strong id="memory">&mdash;</strong><p id="router-name">Waiting for the router</p></article><article class="metric"><div class="metric-label">GEO DATA</div><strong><span id="ip-count">0</span> <small>prefixes</small> <span class="divider">/</span> <span id="domain-count">0</span> <small>domains</small></strong><p id="updated">No lists selected</p></article></div>
+<section id="traffic" class="traffic" aria-label="Device traffic">
+<div class="traffic-heading"><h2>Device traffic</h2><span id="traffic-status">Waiting for counters</span></div>
+<div class="traffic-grid">
+<article class="traffic-card"><header><h3>Direct</h3><span>Normal WAN</span></header><strong id="traffic-direct-total" class="traffic-total">&mdash;</strong><div class="traffic-directions"><span>&#8595; Download <b id="traffic-direct-download">&mdash;</b></span><span>&#8593; Upload <b id="traffic-direct-upload">&mdash;</b></span></div><p id="traffic-direct-packets" class="traffic-packets">No current reading</p></article>
+<article class="traffic-card vpn"><header><h3>VPN</h3><span>Through AWG</span></header><strong id="traffic-vpn-total" class="traffic-total">&mdash;</strong><div class="traffic-directions"><span>&#8595; Download <b id="traffic-vpn-download">&mdash;</b></span><span>&#8593; Upload <b id="traffic-vpn-upload">&mdash;</b></span></div><p id="traffic-vpn-packets" class="traffic-packets">No current reading</p></article>
+</div><p class="traffic-note">IPv4 across all devices. Local traffic and the router's own traffic are excluded. Totals reset on router reboot or counter recreation.</p>
+</section>
 <div id="message" class="message" role="status">Ready</div>
 <section id="profiles" class="tab-panel">
 <div class="section-heading"><div><h2>Your VPN profiles</h2><p>Keep several profiles. Connect one at a time.</p></div><button id="new-profile" class="primary">Import profile</button></div>

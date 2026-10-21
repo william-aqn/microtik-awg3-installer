@@ -19,12 +19,15 @@ import (
 
 type Row map[string]string
 type Router struct {
-	settings  Settings
-	client    *http.Client
-	scriptMu  sync.Mutex
-	scriptDir string
-	geo       *GeoDNS
-	dnsRAM    *dnsRegistrar
+	settings           Settings
+	client             *http.Client
+	scriptMu           sync.Mutex
+	scriptDir          string
+	geo                *GeoDNS
+	dnsRAM             *dnsRegistrar
+	trafficMu          sync.RWMutex
+	trafficInitialized bool
+	trafficError       error
 }
 
 func newRouter(s Settings) *Router {

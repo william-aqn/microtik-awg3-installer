@@ -73,6 +73,7 @@ async function update(){
     $('updated').textContent=data.geo_error?'Saved snapshot; Geo rules need attention':data.bundle.downloaded?'Updated '+new Date(data.bundle.downloaded).toLocaleString():'No lists selected';
     for(const id of ['save','refresh','toggle'])$(id).disabled=!!data.busy||!!data.router_error;
     renderProfiles(data);
+    renderTraffic(data.traffic);
     if(submittingRevision!==null&&!data.busy){
       dirty=!!data.error||editRevision!==submittingRevision;
       submittingRevision=null;
@@ -80,7 +81,7 @@ async function update(){
     }
     if(!dirty){setPolicy(data.policy,data.leases);message(data.router_error||data.error||data.geo_error||data.dns?.error||tunnel.error||data.message,data.router_error||data.error||data.geo_error||data.dns?.error||tunnel.error?'error':data.busy?'busy':'');}
     if(data.busy)message(data.message,'busy');
-  } catch(e) { if(!$('app').hidden)message(e.message,'error'); }
+  } catch(e) { if(!$('app').hidden){message(e.message,'error');renderTraffic({error:'Traffic update failed; current counters unavailable'});} }
   finally {updateRunning=false;}
 }
 async function action(kind){
