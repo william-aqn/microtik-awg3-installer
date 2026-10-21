@@ -257,26 +257,31 @@ func (a *App) listenControl() error {
 		_ = listener.Close()
 		return e
 	}
-	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, WriteTimeout: 20 * time.Second, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" && r.URL.Path == "/diag" {
-			reply(w, 200, a.diagnostics(r.Context()))
-			return
-		}
-		if r.Method != "POST" {
-			apiError(w, 405, "POST required")
-			return
-		}
-		if e := a.queueTunnel(strings.TrimPrefix(r.URL.Path, "/"), Profile{}); e != nil {
-			apiError(w, 409, e.Error())
-			return
-		}
-		reply(w, 202, map[string]bool{"accepted": true})
-	})}
+	server := &http.Server{ReadHeaderTimeout: 3 * time.Second, WriteTimeout: 20 * time.Second, Handler: http.HandlerFunc(a.serveControl)}
 	go func() { _ = server.Serve(listener) }()
 	return nil
 }
+func (a *App) serveControl(w http.ResponseWriter, r *http.Request) {
+	if r.Method == "GET" && r.URL.Path == "/diag" {
+		reply(w, 200, a.diagnostics(r.Context()))
+		return
+	}
+	if r.Method != "POST" {
+		apiError(w, 405, "POST required")
+		return
+	}
+	if r.URL.Path == "/reset-password" {
+		a.resetPassword(w)
+		return
+	}
+	if e := a.queueTunnel(strings.TrimPrefix(r.URL.Path, "/"), Profile{}); e != nil {
+		apiError(w, 409, e.Error())
+		return
+	}
+	reply(w, 202, map[string]bool{"accepted": true})
+}
 func controlCLI(action string) error {
-	allowed := map[string]bool{"toggle": true, "connect": true, "disconnect": true, "restart": true, "rollback": true, "diag": true}
+	allowed := map[string]bool{"toggle": true, "connect": true, "disconnect": true, "restart": true, "rollback": true, "diag": true, "reset-password": true}
 	if !allowed[action] {
 		return errors.New("Unknown control command")
 	}
@@ -296,6 +301,15 @@ func controlCLI(action string) error {
 			b, _ = io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 			_ = resp.Body.Close()
 			if resp.StatusCode < 300 {
+				if action == "reset-password" {
+					var result struct{ Password, Message string }
+					if json.Unmarshal(b, &result) != nil || result.Password == "" {
+						return errors.New("Cannot read reset result. Run the command again to get a new password")
+					}
+					fmt.Println("New panel password: " + result.Password)
+					fmt.Println(result.Message)
+					return nil
+				}
 				fmt.Println(string(b))
 				return nil
 			}

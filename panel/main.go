@@ -541,7 +541,7 @@ func run() error {
 	config := flag.String("config", "/data/settings.json", "Private settings file")
 	demo := flag.Bool("demo", false, "Read-only router preview on 127.0.0.1:9865")
 	diag := flag.Bool("diag", false, "Print sanitized router diagnostics and exit")
-	control := flag.String("control", "", "Local controller command: toggle, connect, disconnect, restart, rollback or diag")
+	control := flag.String("control", "", "Local controller command: toggle, connect, disconnect, restart, rollback, diag or reset-password")
 	check := flag.String("check-sources", "", "Validate a policy JSON and download lists, without a router")
 	checkProfile := flag.String("check-profile", "", "Validate a native config without connecting or printing secrets")
 	flag.Parse()

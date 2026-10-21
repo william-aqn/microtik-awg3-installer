@@ -41,6 +41,61 @@ func sessionCookie(w http.ResponseWriter, r *http.Request, token string) {
 	http.SetCookie(w, &http.Cookie{Name: "awg_session", Value: token, Path: "/", MaxAge: 8 * 3600, HttpOnly: true, Secure: r.TLS != nil, SameSite: http.SameSiteStrictMode})
 }
 
+func passwordHash(password string) (string, string, error) {
+	saltText := randomID()[:32]
+	salt, _ := hex.DecodeString(saltText)
+	hash, e := pbkdf2.Key(sha256.New, password, salt, PasswordIterations, 32)
+	return saltText, hex.EncodeToString(hash), e
+}
+
+// Caller holds a.mu. Publish new credentials only after the USB write succeeds.
+func (a *App) savePassword(salt, hash string) error {
+	settings := a.s
+	settings.PasswordSalt, settings.PasswordHash = salt, hash
+	path := a.configPath
+	if path == "" {
+		path = filepath.Join(a.s.DataDir, "settings.json")
+	}
+	if e := writeJSON(path, settings); e != nil {
+		return errors.New("Cannot save password on USB. Your current password and sessions are unchanged.")
+	}
+	a.s.PasswordSalt, a.s.PasswordHash = salt, hash
+	a.sessions = map[string]time.Time{}
+	a.loginAttempts = 0
+	a.loginWindow = time.Now()
+	return nil
+}
+
+// Recovery is exposed ONLY on the root-only Unix control socket, never HTTP.
+// The command prints the fresh password to the administrator's terminal only.
+func (a *App) resetPassword(w http.ResponseWriter) {
+	password := randomID()[:32]
+	salt, hash, e := passwordHash(password)
+	if e != nil {
+		apiError(w, 500, "Cannot derive password hash")
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.demo {
+		apiError(w, 409, "Password recovery is not available in preview")
+		return
+	}
+	if a.busy {
+		apiError(w, 409, "Wait for the current operation to finish, then run the command again")
+		return
+	}
+	if e := a.savePassword(salt, hash); e != nil {
+		apiError(w, 500, e.Error())
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	reply(w, 200, map[string]string{
+		"password": password,
+		"message":  "All panel sessions were signed out. VPN is unchanged. Sign in and choose your own password in Settings > Panel access.",
+	})
+}
+
 func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "POST" {
 		apiError(w, 405, "POST required")
@@ -64,9 +119,7 @@ func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {
 		apiError(w, 400, "Passwords do not match")
 		return
 	}
-	saltText := randomID()[:32]
-	salt, _ := hex.DecodeString(saltText)
-	hash, e := pbkdf2.Key(sha256.New, input.Password, salt, PasswordIterations, 32)
+	saltText, hash, e := passwordHash(input.Password)
 	if e != nil {
 		apiError(w, 500, "Cannot derive password hash")
 		return
@@ -90,23 +143,12 @@ func (a *App) passwordAPI(w http.ResponseWriter, r *http.Request) {
 		reply(w, 200, map[string]string{"message": "Preview only. No real password was changed."})
 		return
 	}
-	settings := a.s
-	settings.PasswordSalt = saltText
-	settings.PasswordHash = hex.EncodeToString(hash)
-	path := a.configPath
-	if path == "" {
-		path = filepath.Join(a.s.DataDir, "settings.json")
-	}
-	if e = writeJSON(path, settings); e != nil {
-		apiError(w, 500, "Cannot save password on USB. Your current password and sessions are unchanged.")
+	if e = a.savePassword(saltText, hash); e != nil {
+		apiError(w, 500, e.Error())
 		return
 	}
-	a.s.PasswordSalt = settings.PasswordSalt
-	a.s.PasswordHash = settings.PasswordHash
 	token := randomID()
-	a.sessions = map[string]time.Time{token: time.Now().Add(8 * time.Hour)}
-	a.loginAttempts = 0
-	a.loginWindow = time.Now()
+	a.sessions[token] = time.Now().Add(8 * time.Hour)
 	sessionCookie(w, r, token)
 	reply(w, 200, map[string]string{"message": "Password changed. Other sessions were signed out. Your VPN connection is unchanged."})
 }
