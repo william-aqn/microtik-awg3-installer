@@ -12,6 +12,7 @@ import sys
 import time
 
 from prepare import build_bundle, write_private
+from update import Device, update, retry_cleanup, rollback_update
 
 ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('awg_legacy_transport', ROOT / 'awg-mikrotik.py')
@@ -33,7 +34,7 @@ def diagnostics(router, output):
         '/routing/rule/print where comment~"^AWG"',
         '/ip/route/print where routing-table=to-awg',
     )
-    parts = ['AWG Control 0.2.6 diagnostics (no configuration contents)']
+    parts = ['AWG Control diagnostics (no configuration contents)']
     for cmd in commands:
         try:
             parts.append(cmd + '\n' + router.run(cmd))
@@ -74,8 +75,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     mode = p.add_mutually_exclusive_group()
     mode.add_argument('--diag', action='store_true', help='Read-only diagnostics')
+    mode.add_argument('--update', action='store_true', help='Update, verify, then keep the active version and one rollback')
+    mode.add_argument('--cleanup', action='store_true', help='Retry cleanup of the last verified update; no new image')
     mode.add_argument('--migrate', action='store_true', help='Migrate the existing two-container 0.1.1 installation')
-    mode.add_argument('--rollback', type=Path, help='Private run directory containing rollback.rsc and target.json')
+    mode.add_argument('--rollback', type=Path, help='Private install/update run directory to roll back')
     p.add_argument('--host')
     p.add_argument('--user', default='admin')
     p.add_argument('--port', type=int, default=22)
@@ -98,12 +101,31 @@ def main():
             diagnostics(router, output)
             return 0
         if args.rollback:
+            if (args.rollback / 'update.json').is_file():
+                tx = json.loads((args.rollback / 'update.json').read_text(encoding='ascii'))
+                rollback_update(Device(router, legacy), tx, output, legacy)
+                diagnostics(router, output)
+                return 0
             target = json.loads((args.rollback / 'target.json').read_text())
             if target['host'] != args.host:
                 raise ValueError('Rollback belongs to another router.')
             disk = legacy.name(target['disk'])
             router.upload(args.rollback / 'rollback.rsc', disk + '/awg-control-rollback.rsc')
             router.run('/import file-name=' + disk + '/awg-control-rollback.rsc', timeout=180)
+            diagnostics(router, output)
+            return 0
+        if args.update or args.cleanup:
+            disk = legacy.name(args.disk or legacy.ask('Ext4 USB partition', 'usb1-part1'))
+            device = Device(router, legacy)
+            if args.cleanup:
+                retry_cleanup(device, disk, output)
+            else:
+                image = args.image or output / 'awg-control.tar'
+                if not args.image:
+                    print('Building the ARMv7 update image using Docker.')
+                    subprocess.run([sys.executable, str(ROOT / 'panel/build.py'), '--output', str(image.resolve())], check=True)
+                image_checksum(image)
+                update(device, disk, image, output, legacy)
             diagnostics(router, output)
             return 0
         lan = args.lan or legacy.ask('LAN subnet', '192.168.3.0/24')

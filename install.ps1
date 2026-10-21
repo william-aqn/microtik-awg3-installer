@@ -16,7 +16,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $baseUrl = 'https://raw.githubusercontent.com/william-aqn/microtik-awg3-installer/main'
-$pythonSha256 = 'ff94b966ddb69fac171e98e72d0d36714a3e7ce69aab5c7ae59c4c37699b1b55'
+$pythonSha256 = '06839bd8bc693813dd1b83609e2814758529bc62b66fbbad5b147a1d8445ee95'
 $runtimeRoot = Join-Path $env:LOCALAPPDATA 'awg-mikrotik'
 $venvPath = Join-Path $runtimeRoot 'venv'
 $pythonPath = Join-Path $venvPath 'Scripts\python.exe'

@@ -229,6 +229,11 @@ func (a *App) diagnostics(ctx context.Context) map[string]any {
 	}
 	a.mu.Lock()
 	d["geo_error"] = a.geoError
+	// The installer must distinguish a listening process from completed USB
+	// policy restoration before it is allowed to retire a rollback container.
+	d["busy"] = a.busy
+	d["error"] = a.lastError
+	d["revision"] = a.state.Revision
 	a.mu.Unlock()
 	return d
 }

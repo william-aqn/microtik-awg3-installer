@@ -25,6 +25,7 @@ RUN case "$TARGETARCH" in arm) arch=armv7;; arm64) arch=aarch64;; amd64) arch=x8
         add --no-cache iproute2 iptables iptables-legacy
 
 FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+LABEL org.opencontainers.image.version="0.2.7"
 COPY --from=packages /rootfs/ /
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /amneziawg-go /usr/bin/amneziawg-go

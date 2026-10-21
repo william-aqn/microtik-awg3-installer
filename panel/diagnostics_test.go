@@ -26,7 +26,9 @@ func TestSlowRouterDiagnosticsDoesNotInventDisconnectedTunnel(t *testing.T) {
 	defer cancel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cancel() // Router table inspection has exhausted the report deadline.
-		_, _ = w.Write([]byte(`[]`))
+		// Either cancellation or a failed response must win the transport race;
+		// a successful empty table made this check timing-dependent.
+		w.WriteHeader(http.StatusGatewayTimeout)
 	}))
 	defer server.Close()
 	app := &App{tunnel: tunnel, router: newRouter(Settings{RouterURL: server.URL})}
@@ -37,5 +39,18 @@ func TestSlowRouterDiagnosticsDoesNotInventDisconnectedTunnel(t *testing.T) {
 	status := report["tunnel"].(TunnelStatus)
 	if !status.Connected || status.Handshake == 0 {
 		t.Fatal("Router API failure overwrote the healthy local tunnel snapshot", status)
+	}
+}
+
+func TestDiagnosticsExposeUpdateReadiness(t *testing.T) {
+	app := &App{busy: true, lastError: "restore failed", geoError: "lists pending", state: Saved{Revision: "policy-revision"}}
+	report := app.diagnostics(context.Background())
+	if report["busy"] != true || report["error"] != "restore failed" || report["geo_error"] != "lists pending" || report["revision"] != "policy-revision" {
+		t.Fatal("Update health check cannot distinguish startup or failure", report)
+	}
+	app.busy, app.lastError, app.geoError = false, "", ""
+	report = app.diagnostics(context.Background())
+	if report["busy"] != false || report["error"] != "" || report["geo_error"] != "" {
+		t.Fatal("Completed restoration is not reported", report)
 	}
 }

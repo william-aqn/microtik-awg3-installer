@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	Version        = "0.2.6"
+	Version        = "0.2.7"
 	MaxIPs         = 32768
 	MaxDomains     = 2048
 	MaxRegex       = 32
