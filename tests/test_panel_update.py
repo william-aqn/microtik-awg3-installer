@@ -193,10 +193,12 @@ class FakeDevice(u.Device):
         self.event('unlink:' + remote)
         self.files.pop(remote, None)
 
-    def remove_empty_dir(self, directory):
+    def remove_empty_dir(self, directory, *, allow_nonempty=False):
         if directory not in self.dirs:
             return
         if any(p.startswith(directory + '/') for p in self.files.keys() | self.dirs):
+            if allow_nonempty:
+                return
             raise ValueError('Nonempty directory')
         self.dirs.remove(directory)
 
@@ -425,6 +427,17 @@ class UpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'shares'):
             self.perform()
         self.assertFalse(self.d.events)
+
+    def test_routeros_shared_layer_store_is_preserved_without_blocking_next_update(self):
+        layers = DISK + '/awg-layers-025i'
+        self.d.items[1]['layer-dir'] = layers
+        self.d.dirs.add(layers)
+        self.d.files[layers + '/still-shared-by-routeros'] = b'base layer'
+        self.perform()
+        self.assertEqual(self.d.journal_value['phase'], 'complete')
+        self.assertIn(layers + '/still-shared-by-routeros', self.d.files)
+        self.perform()
+        self.assertEqual(len(self.d.items), 2)
 
 
 if __name__ == '__main__':

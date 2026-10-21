@@ -346,11 +346,15 @@ class Device:
         if self.exists(remote):
             self.router.run('/file/remove [find where name=' + self.q(remote) + ']', timeout=180)
 
-    def remove_empty_dir(self, directory):
+    def remove_empty_dir(self, directory, *, allow_nonempty=False):
         if not directory or not self.exists(directory):
             return
         with self.router.client.open_sftp() as sftp:
             if sftp.listdir('/' + path(directory)):
+                if allow_nonempty:
+                    # RouterOS can deduplicate layers across layer-dir values.
+                    # A nonempty store may still serve the retained containers.
+                    return
                 raise ValueError('Directory is not empty; retained for inspection: ' + directory)
         self.remove_file(directory)
 
@@ -412,7 +416,7 @@ class Device:
         layers = record.get('layer-dir', '').lstrip('/')
         if re.fullmatch(re.escape(disk) + r'/(awg-control-' + TOKEN + r'-layers|awg-layers-[a-z0-9-]+)', layers):
             if not any(path(r['layer-dir']) == layers for r in self.containers() if r.get('layer-dir')):
-                self.remove_empty_dir(layers)
+                self.remove_empty_dir(layers, allow_nonempty=True)
 
 
 def validate_journal(tx, disk, identity):
